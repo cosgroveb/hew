@@ -29,10 +29,12 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: sudo apt-get update && sudo apt-get install -y debhelper dpkg-dev git-buildpackage lintian bash-completion
 
-      - name: Configure git
+      - name: Configure git and dch environment
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo 'DEBFULLNAME=github-actions[bot]' >> "$GITHUB_ENV"
+          echo 'DEBEMAIL=github-actions[bot]@users.noreply.github.com' >> "$GITHUB_ENV"
 
       - name: Merge main into debian/main
         run: |
