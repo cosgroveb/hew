@@ -1,0 +1,21 @@
+# Flag list sourced from cmd/hew/main.go — update when flags change.
+_hew()
+{
+    local cur prev opts
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    opts="-p --prompt --model --base-url --max-steps -v --verbose --version --help"
+
+    # Flags that take a value — suppress completion for their arguments
+    case "${prev}" in
+        -p|--prompt|--model|--base-url|--max-steps)
+            return 0
+            ;;
+    esac
+
+    if [[ ${cur} == -* ]]; then
+        COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+    fi
+}
+complete -F _hew hew

@@ -1,0 +1,22 @@
+Source: hew
+Section: devel
+Priority: optional
+Maintainer: Brian Cosgrove <bcosgrove@gmail.com>
+Build-Depends: bash-completion,
+               debhelper-compat (= 13),
+               golang-go (>= 2:1.25~)
+Standards-Version: 4.6.2
+Homepage: https://github.com/cosgroveb/hew
+Vcs-Git: https://github.com/cosgroveb/hew.git -b debian/main
+Vcs-Browser: https://github.com/cosgroveb/hew
+Rules-Requires-Root: no
+
+Package: hew
+Architecture: any
+Depends: ${misc:Depends}
+Description: minimal coding agent CLI
+ hew is a minimal coding agent that queries LLMs and executes bash
+ commands in an iterative loop. It supports both Anthropic and
+ OpenAI-compatible APIs, runs in conversational REPL mode or
+ single-prompt mode, and loads project-specific instructions from
+ AGENTS.md files.
