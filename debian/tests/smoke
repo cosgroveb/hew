@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+# Verify the binary is installed and reports its version
+hew --version
+
+# Verify it exits with error when no API key is set
+unset HEW_API_KEY
+unset ANTHROPIC_API_KEY
+if hew -p "test" 2>/dev/null; then
+    echo "FAIL: hew should exit with error when no API key is set"
+    exit 1
+fi
+
+echo "OK: smoke tests passed"
