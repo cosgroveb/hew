@@ -1,3 +1,16 @@
+hew (0.1.1-1) unstable; urgency=medium
+
+  [ Brian Cosgrove ]
+  * Add initial Debian packaging
+  * Add release workflow for Debian packages and cross-platform binaries
+
+  [ github-actions[bot] ]
+  * Update changelog for 0.0.1-1
+  * Restore gbp dch and arm64 deb, fix runner label
+  * Add SECURITY.md, artifact attestation, changelog generation, and Homebrew tap
+
+ -- Brian Cosgrove <cosgroveb@gmail.com>  Sun, 08 Mar 2026 05:02:44 +0000
+
 hew (0.0.1-1) unstable; urgency=medium
 
   * Release 0.0.1
