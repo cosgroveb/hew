@@ -46,6 +46,7 @@ func (e *fakeExecutor) Execute(_ context.Context, command string, dir string) (s
 type fakeStreamer struct {
 	fakeModel
 	chunks [][]string // per-call token chunks
+	errs   []error    // per-call errors (returned after emitting chunks)
 }
 
 func (s *fakeStreamer) QueryStream(_ context.Context, messages []Message, onToken func(string)) (Response, error) {
@@ -59,7 +60,14 @@ func (s *fakeStreamer) QueryStream(_ context.Context, messages []Message, onToke
 			onToken(chunk)
 		}
 	}
+	var err error
+	if s.calls < len(s.errs) {
+		err = s.errs[s.calls]
+	}
 	s.calls++
+	if err != nil {
+		return Response{}, err
+	}
 	return resp, nil
 }
 
@@ -260,6 +268,39 @@ func TestStep(t *testing.T) {
 			if _, ok := e.(EventToken); ok {
 				t.Error("expected no EventToken events for empty stream")
 			}
+		}
+	})
+
+	t.Run("returns error after partial tokens from Streamer", func(t *testing.T) {
+		model := &fakeStreamer{
+			fakeModel: fakeModel{responses: []Response{
+				{Message: Message{Role: "assistant", Content: "partial"}},
+			}},
+			chunks: [][]string{{"par", "tial"}},
+			errs:   []error{fmt.Errorf("connection lost")},
+		}
+		notify, events := collectEvents()
+
+		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
+		agent.Notify = notify
+		agent.messages = append(agent.messages, Message{Role: "user", Content: "go"})
+
+		_, err := agent.Step(context.Background())
+		if err == nil {
+			t.Fatal("expected error from QueryStream")
+		}
+		if !strings.Contains(err.Error(), "connection lost") {
+			t.Errorf("error should contain 'connection lost', got: %v", err)
+		}
+		// EventToken events should still have been emitted before the error
+		var tokenCount int
+		for _, e := range *events {
+			if _, ok := e.(EventToken); ok {
+				tokenCount++
+			}
+		}
+		if tokenCount != 2 {
+			t.Errorf("expected 2 EventToken events before error, got %d", tokenCount)
 		}
 	})
 

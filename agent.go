@@ -163,8 +163,8 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 				Role:    "user",
 				Content: "Step limit reached. Summarize your progress and exit.",
 			})
-			// Query (not QueryStream) is intentional here — the step limit summary
-			// is a forced exit, not normal operation. Streaming it is unnecessary.
+			// Query (not QueryStream) — the step limit summary is a forced exit
+			// and typically short. Revisit if users notice the lack of streaming here.
 			resp, err := a.model.Query(ctx, a.messages)
 			if err != nil {
 				return fmt.Errorf("query model (final): %w", err)
