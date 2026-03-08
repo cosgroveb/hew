@@ -31,11 +31,17 @@ type EventDebug struct {
 	Message string
 }
 
+// EventToken fires for each text fragment during streaming.
+type EventToken struct {
+	Text string `json:"text"`
+}
+
 func (EventResponse) event()     {}
 func (EventCommandStart) event() {}
 func (EventCommandDone) event()  {}
 func (EventFormatError) event()  {}
 func (EventDebug) event()        {}
+func (EventToken) event()        {}
 
 // StepResult is the outcome of one Step call.
 type StepResult struct {

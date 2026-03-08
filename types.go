@@ -25,6 +25,16 @@ type Model interface {
 	Query(ctx context.Context, messages []Message) (Response, error)
 }
 
+// Streamer extends Model with streaming support.
+// QueryStream calls onToken with each text fragment as it arrives from the API,
+// then returns the fully-assembled Response. onToken is called synchronously
+// from the SSE read loop and must not block for extended periods.
+// Calls already made to onToken cannot be retracted on error.
+type Streamer interface {
+	Model
+	QueryStream(ctx context.Context, messages []Message, onToken func(string)) (Response, error)
+}
+
 // Executor runs a shell command and returns its output.
 type Executor interface {
 	Execute(ctx context.Context, command string, dir string) (string, error)
