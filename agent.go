@@ -77,7 +77,15 @@ func summarizeCommand(cmd string) string {
 func (a *Agent) Step(ctx context.Context) (StepResult, error) {
 	a.started = true
 	a.notify(EventDebug{Message: "querying model..."})
-	resp, err := a.model.Query(ctx, a.messages)
+	var resp Response
+	var err error
+	if s, ok := a.model.(Streamer); ok {
+		resp, err = s.QueryStream(ctx, a.messages, func(text string) {
+			a.notify(EventToken{Text: text})
+		})
+	} else {
+		resp, err = a.model.Query(ctx, a.messages)
+	}
 	if err != nil {
 		return StepResult{}, fmt.Errorf("query model: %w", err)
 	}
@@ -155,6 +163,8 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 				Role:    "user",
 				Content: "Step limit reached. Summarize your progress and exit.",
 			})
+			// Query (not QueryStream) is intentional here — the step limit summary
+			// is a forced exit, not normal operation. Streaming it is unnecessary.
 			resp, err := a.model.Query(ctx, a.messages)
 			if err != nil {
 				return fmt.Errorf("query model (final): %w", err)

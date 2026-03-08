@@ -43,6 +43,26 @@ func (e *fakeExecutor) Execute(_ context.Context, command string, dir string) (s
 	return out, nil
 }
 
+type fakeStreamer struct {
+	fakeModel
+	chunks [][]string // per-call token chunks
+}
+
+func (s *fakeStreamer) QueryStream(_ context.Context, messages []Message, onToken func(string)) (Response, error) {
+	s.got = append(s.got, append([]Message{}, messages...))
+	if s.calls >= len(s.responses) {
+		return Response{}, fmt.Errorf("no more responses")
+	}
+	resp := s.responses[s.calls]
+	if s.calls < len(s.chunks) {
+		for _, chunk := range s.chunks[s.calls] {
+			onToken(chunk)
+		}
+	}
+	s.calls++
+	return resp, nil
+}
+
 // collectEvents returns a Notify function and a pointer to the collected events slice.
 func collectEvents() (func(Event), *[]Event) {
 	var events []Event
@@ -171,6 +191,75 @@ func TestStep(t *testing.T) {
 		}
 		if !hasCmdDone {
 			t.Error("missing EventCommandDone")
+		}
+	})
+
+	t.Run("emits EventToken when model implements Streamer", func(t *testing.T) {
+		model := &fakeStreamer{
+			fakeModel: fakeModel{responses: []Response{
+				{Message: Message{Role: "assistant", Content: "```bash\necho hi\n```"}, Usage: Usage{InputTokens: 10, OutputTokens: 5}},
+			}},
+			chunks: [][]string{{"```bash", "\necho hi\n", "```"}},
+		}
+		executor := &fakeExecutor{outputs: []string{"hi\n"}}
+		notify, events := collectEvents()
+
+		agent := NewAgent(model, executor, "/tmp")
+		agent.Notify = notify
+		agent.messages = append(agent.messages, Message{Role: "user", Content: "say hi"})
+
+		_, err := agent.Step(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Verify EventToken events arrive before EventResponse
+		var tokenTexts []string
+		responseIdx := -1
+		for i, e := range *events {
+			switch ev := e.(type) {
+			case EventToken:
+				if responseIdx >= 0 {
+					t.Error("EventToken arrived after EventResponse")
+				}
+				tokenTexts = append(tokenTexts, ev.Text)
+			case EventResponse:
+				responseIdx = i
+			}
+		}
+		if len(tokenTexts) != 3 {
+			t.Errorf("expected 3 EventToken events, got %d", len(tokenTexts))
+		}
+		if responseIdx < 0 {
+			t.Error("missing EventResponse")
+		}
+	})
+
+	t.Run("handles empty stream from Streamer", func(t *testing.T) {
+		model := &fakeStreamer{
+			fakeModel: fakeModel{responses: []Response{
+				{Message: Message{Role: "assistant", Content: "```bash\nexit\n```"}},
+			}},
+			chunks: [][]string{{}}, // no chunks
+		}
+		notify, events := collectEvents()
+
+		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
+		agent.Notify = notify
+		agent.messages = append(agent.messages, Message{Role: "user", Content: "done"})
+
+		result, err := agent.Step(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Action != "exit" {
+			t.Errorf("got action %q, want %q", result.Action, "exit")
+		}
+		// Should have EventResponse but no EventToken
+		for _, e := range *events {
+			if _, ok := e.(EventToken); ok {
+				t.Error("expected no EventToken events for empty stream")
+			}
 		}
 	})
 
