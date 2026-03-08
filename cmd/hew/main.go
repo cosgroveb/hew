@@ -161,6 +161,8 @@ Environment:
 			fmt.Fprintln(os.Stdout, "--- done ---") //nolint:errcheck
 		case hew.EventFormatError:
 			// handled by agent loop; nothing to print
+		case hew.EventToken:
+			// TODO: streaming output (Task 6)
 		case hew.EventDebug:
 			if showDebug {
 				fmt.Fprintf(os.Stderr, "[hew] %s\n", e.Message)
@@ -269,6 +271,8 @@ func writeEventLog(f *os.File, e hew.Event) {
 		}{Output: e.Output, Err: errString(e.Err)}}
 	case hew.EventFormatError:
 		je = jsonEvent{Type: "format_error", Payload: e}
+	case hew.EventToken:
+		je = jsonEvent{Type: "token", Payload: e}
 	case hew.EventDebug:
 		je = jsonEvent{Type: "debug", Payload: e}
 	}
