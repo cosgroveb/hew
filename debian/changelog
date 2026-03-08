@@ -1,3 +1,26 @@
+hew (0.1.0-1) unstable; urgency=medium
+
+  [ Brian Cosgrove ]
+  * Add initial Debian packaging
+  * Add release workflow for Debian packages and cross-platform binaries
+
+  [ github-actions[bot] ]
+  * Update changelog for 0.0.1-1
+  * Restore gbp dch and arm64 deb, fix runner label
+
+  [ github-actions[bot] ]
+  * Update changelog for 0.0.2-1
+  * Add HEW_BASE_URL and HEW_MODEL env vars
+  * Add worktree directory preference to CLAUDE.md
+  * Add AddMessages to seed agent conversation history
+  * Add ProcessGroup field to CommandExecutor for child isolation
+  * Add --event-log flag to write JSONL events to file
+  * Add --trajectory flag to dump message history on exit
+  * Add --load-messages flag to seed conversation from file
+  * Address review feedback and update docs for orchestration flags
+
+ -- Brian Cosgrove <cosgroveb@gmail.com>  Sun, 08 Mar 2026 04:48:19 +0000
+
 hew (0.0.2-1) unstable; urgency=medium
 
   [ Brian Cosgrove ]
