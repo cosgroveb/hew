@@ -149,11 +149,31 @@ Environment:
 
 	agent := hew.NewAgent(model, executor, cwd)
 
+	// Streaming output: tokens are printed incrementally to stdout as they arrive.
+	// Currently streams unconditionally regardless of whether stdout is a TTY or pipe.
+	// If pipe consumers have issues with partial-line writes, add isatty detection
+	// to fall back to batch output for non-TTY destinations.
 	showDebug := *verbose || *verboseShort
+	streamed := false
+	var lastByte byte
 	agent.Notify = func(e hew.Event) {
 		switch e := e.(type) {
+		case hew.EventToken:
+			streamed = true
+			fmt.Fprint(os.Stdout, e.Text) //nolint:errcheck
+			if len(e.Text) > 0 {
+				lastByte = e.Text[len(e.Text)-1]
+			}
 		case hew.EventResponse:
-			fmt.Fprintln(os.Stdout, e.Message.Content) //nolint:errcheck
+			if streamed {
+				if lastByte != '\n' {
+					fmt.Fprintln(os.Stdout) //nolint:errcheck
+				}
+				streamed = false
+				lastByte = 0
+			} else {
+				fmt.Fprintln(os.Stdout, e.Message.Content) //nolint:errcheck
+			}
 		case hew.EventCommandStart:
 			fmt.Fprintf(os.Stdout, "--- running: %s ---\n", summarizeCommand(e.Command)) //nolint:errcheck
 		case hew.EventCommandDone:
@@ -161,9 +181,15 @@ Environment:
 			fmt.Fprintln(os.Stdout, "--- done ---") //nolint:errcheck
 		case hew.EventFormatError:
 			// handled by agent loop; nothing to print
-		case hew.EventToken:
-			// TODO: streaming output (Task 6)
 		case hew.EventDebug:
+			if e.Message == "querying model..." {
+				fmt.Fprintln(os.Stderr, "thunking...") //nolint:errcheck
+				// Reset streaming state for each new model query.
+				// Covers: mid-stream errors leaving streamed=true, REPL mode
+				// carrying state across runs, and normal step boundaries.
+				streamed = false
+				lastByte = 0
+			}
 			if showDebug {
 				fmt.Fprintf(os.Stderr, "[hew] %s\n", e.Message)
 			}
