@@ -290,3 +290,51 @@ func TestModelAgentDoneStopsStatusTimer(t *testing.T) {
 		t.Error("status.running should be false after agentDoneMsg")
 	}
 }
+
+func TestModelDiffOverlayToggle(t *testing.T) {
+	m := setupModel()
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.shared.cwd = "/tmp"
+
+	// Switch to viewport mode first
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	// Ctrl+F should toggle diff overlay
+	m = updateModel(t, m, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	if !m.diff.visible {
+		t.Error("diff overlay should be visible after Ctrl+F")
+	}
+
+	// Esc should dismiss
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.diff.visible {
+		t.Error("diff overlay should be hidden after Esc")
+	}
+}
+
+func TestModelDiffOverlayBlocksOtherKeys(t *testing.T) {
+	m := setupModel()
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.shared.cwd = "/tmp"
+	m.diff.visible = true
+
+	// 'i' should NOT switch focus when diff is visible
+	prevFocus := m.focus
+	m = updateModel(t, m, tea.KeyPressMsg{Code: 'i'})
+	if m.focus != prevFocus {
+		t.Error("keys should not change focus while diff overlay is visible")
+	}
+}
+
+func TestModelTracksFilesFromCommands(t *testing.T) {
+	m := setupModel()
+	m = updateModel(t, m, eventMsg{event: hew.EventCommandStart{Command: "touch newfile.go", Dir: "."}})
+	m = updateModel(t, m, eventMsg{event: hew.EventCommandDone{Output: "", Err: nil}})
+
+	if len(m.files.files) != 1 {
+		t.Errorf("expected 1 tracked file, got %d: %v", len(m.files.files), m.files.files)
+	}
+	if m.files.files[0] != "newfile.go" {
+		t.Errorf("expected newfile.go, got %s", m.files.files[0])
+	}
+}

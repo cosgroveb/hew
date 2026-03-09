@@ -39,12 +39,15 @@ type shared struct {
 	agent    *hew.Agent
 	program  *tea.Program
 	eventLog *os.File
+	cwd      string
 }
 
 type model struct {
 	chat      chatModel
 	input     inputModel
 	status    statusModel
+	diff      diffModel
+	files     fileTracker
 	styles    *styles
 	shared    *shared
 	eventCh   <-chan hew.Event
@@ -75,6 +78,7 @@ func newModel(opts modelOpts) model {
 		chat:    newChatModel(0, 0, opts.styles, opts.verbose),
 		input:   newInputModel(0, &opts.styles.Input),
 		status:  newStatusModel(opts.modelName, opts.maxSteps, &opts.styles.Status),
+		diff:    newDiffModel(opts.styles),
 		styles:  opts.styles,
 		shared:  &shared{},
 		eventCh: opts.eventCh,
@@ -111,6 +115,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.recalcLayout()
+		chatH := m.height - statusHeight - m.inputHeight()
+		if chatH < 1 {
+			chatH = 1
+		}
+		m.diff.resize(m.width, chatH)
 		return m, nil
 
 	case agentDoneMsg:
@@ -154,6 +163,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 const statusHeight = 1
 
+// recalcLayout uses a pointer receiver because it calls pointer-receiver
+// methods on chatModel. Called from value-receiver methods on model —
+// Go takes &m on the local copy, mutations are preserved through return.
 func (m *model) recalcLayout() {
 	ih := m.inputHeight()
 	chatHeight := m.height - statusHeight - ih
@@ -167,13 +179,16 @@ func (m *model) recalcLayout() {
 
 // routeEvent dispatches a core library event to the appropriate sub-models.
 func (m *model) routeEvent(e hew.Event) {
+	// Capture lastCmd before appendEvent clears it on EventCommandDone
+	lastCmd := m.chat.lastCmd
+
 	m.chat.appendEvent(e)
 	switch ev := e.(type) {
 	case hew.EventResponse:
 		m.status.updateFromResponse(ev.Usage)
 	case hew.EventCommandDone:
-		_ = ev
 		m.status.incrementStep()
+		m.files.trackFromCommand(lastCmd, ev.Output)
 	case hew.EventCommandStart, hew.EventFormatError, hew.EventDebug:
 		// handled by chat.appendEvent only
 	default:
@@ -187,6 +202,11 @@ func tickCmd() tea.Cmd {
 }
 
 func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Diff overlay active — intercept all keys
+	if m.diff.visible {
+		return m.handleDiffKey(msg)
+	}
+
 	// gg chord handling
 	if m.pendingG {
 		m.pendingG = false
@@ -322,16 +342,38 @@ func (m model) startTask(task string) (tea.Model, tea.Cmd) {
 	m.eventCh = eventCh
 	m.shared.agent.Notify = makeNotify(eventCh, m.shared.eventLog)
 
-	sh := m.shared
+	agent := m.shared.agent
 
 	cmd := func() tea.Msg {
-		runErr := sh.agent.Run(ctx, task)
+		runErr := agent.Run(ctx, task)
 		close(eventCh)
-		sh.program.Send(agentDoneMsg{err: runErr})
-		return nil
+		return agentDoneMsg{err: runErr}
 	}
 
 	return m, tea.Batch(cmd, eventBridge(eventCh), tickCmd())
+}
+
+func (m model) handleDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.Code == tea.KeyEscape, msg.Code == 'd':
+		m.diff.visible = false
+	case msg.Code == 'q':
+		m.diff.visible = false
+	case msg.Code == 'j':
+		m.diff.viewport.ScrollDown(1)
+	case msg.Code == 'k':
+		m.diff.viewport.ScrollUp(1)
+	case msg.Mod == tea.ModCtrl && msg.Code == 'd':
+		m.diff.viewport.HalfPageDown()
+	case msg.Mod == tea.ModCtrl && msg.Code == 'u':
+		m.diff.viewport.HalfPageUp()
+	case msg.Code == 'G':
+		m.diff.viewport.GotoBottom()
+	case msg.Code == 'g':
+		// Simple single-g for top in diff mode (no chord needed)
+		m.diff.viewport.GotoTop()
+	}
+	return m, nil
 }
 
 func (m model) handleViewportKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -361,6 +403,14 @@ func (m model) handleViewportKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case msg.Code == tea.KeyEnd:
 		m.chat.viewport.GotoBottom()
 		m.chat.hasNew = false
+	case msg.Code == 'f' && msg.Mod == tea.ModCtrl:
+		// Ctrl+F toggles diff overlay
+		chatH := m.height - statusHeight - m.inputHeight()
+		if chatH < 1 {
+			chatH = 1
+		}
+		m.diff.toggle(m.files.files, m.shared.cwd, m.width, chatH)
+		return m, nil
 	}
 
 	if m.chat.viewport.AtBottom() {
@@ -375,18 +425,22 @@ func (m model) View() tea.View {
 		return tea.NewView("")
 	}
 
-	chatView := m.chat.viewport.View()
-
-	// New content indicator
-	if m.chat.hasNew {
-		indicator := m.styles.Chat.NewContent.Render(
-			fmt.Sprintf(" %s new content ", iconNewContent),
-		)
-		chatView += "\n" + indicator
+	var topPane string
+	if m.diff.visible {
+		topPane = m.diff.view()
+	} else {
+		topPane = m.chat.viewport.View()
+		// New content indicator
+		if m.chat.hasNew {
+			indicator := m.styles.Chat.NewContent.Render(
+				fmt.Sprintf(" %s new content ", iconNewContent),
+			)
+			topPane += "\n" + indicator
+		}
 	}
 
 	statusView := m.status.view(m.width)
 	inputView := m.input.view()
 
-	return tea.NewView(chatView + "\n" + statusView + "\n" + inputView)
+	return tea.NewView(topPane + "\n" + statusView + "\n" + inputView)
 }

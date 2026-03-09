@@ -176,10 +176,10 @@ Environment:
 		return
 	}
 
-	runTUI(agent, taskPrompt, *trajectory, *modelFlag, eventLogFile, showDebug)
+	runTUI(agent, taskPrompt, *trajectory, *modelFlag, cwd, eventLogFile, showDebug)
 }
 
-func runTUI(agent *hew.Agent, taskPrompt, trajectory, modelName string, eventLog *os.File, verbose bool) {
+func runTUI(agent *hew.Agent, taskPrompt, trajectory, modelName, cwd string, eventLog *os.File, verbose bool) {
 	s := defaultStyles(true) // TODO: detect actual background
 
 	if taskPrompt != "" {
@@ -200,6 +200,7 @@ func runTUI(agent *hew.Agent, taskPrompt, trajectory, modelName string, eventLog
 		})
 		m.shared.agent = agent
 		m.shared.eventLog = eventLog
+		m.shared.cwd = cwd
 		m.running = true
 		m.status.startRun()
 
@@ -242,6 +243,7 @@ func runTUI(agent *hew.Agent, taskPrompt, trajectory, modelName string, eventLog
 	})
 	m.shared.agent = agent
 	m.shared.eventLog = eventLog
+	m.shared.cwd = cwd
 
 	p := tea.NewProgram(m)
 	m.shared.program = p
