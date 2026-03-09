@@ -2,14 +2,14 @@
 
 ## Overview
 
-hew is a coding agent CLI that queries LLMs and executes bash commands in a loop. Core library is stdlib only. Talks to the Anthropic Messages API and any OpenAI-compatible endpoint. Ships two binaries: `hew` (TUI frontend) and `hew-core` (plain CLI).
+hew is a coding agent CLI that queries LLMs and executes bash commands in a loop. Core library is stdlib only. Talks to the Anthropic Messages API and any OpenAI-compatible endpoint. Ships two binaries: `hew` (plain CLI) and `hui` (TUI frontend).
 
 ## Commands
 
 ```bash
-make build          # Build TUI binary
-make build-core     # Build plain CLI binary (hew-core)
-make build-all      # Build both binaries
+make build          # Build plain CLI binary (hew)
+make build-hui      # Build TUI binary (hui)
+make build-all      # Build both binaries (default target)
 make test           # Run all tests (both modules)
 make check          # Run lint + tests (both modules)
 make lint           # Run golangci-lint (both modules)
@@ -23,13 +23,13 @@ make help           # List all targets
 go test . -v -run TestExtractCommand
 
 # Build with explicit version
-make build VERSION=0.2.0
+make build-all VERSION=0.2.0
 ```
 
 <rules>
 - Before committing, run `make fmt` then `make check`. Do not commit if either fails.
 - A PostToolUse hook runs gofmt on Go files after Edit/Write automatically. You do not need to format manually, but `make fmt` and `make check` are still required before commits.
-- Do not add external dependencies to root go.mod. Core library is stdlib only. Charm deps live only in `cmd/hew/go.mod`.
+- Do not add external dependencies to root go.mod. Core library is stdlib only. Charm deps live only in `cmd/hui/go.mod`.
 - Do not move packages to `internal/`. The core is a public library.
 - Do not add `io.Writer` parameters for output. Output goes through typed events.
 - Do not put policy logic in `Step()`. Keep it in `Run()`. New shared logic goes in `Step()`.
@@ -50,15 +50,15 @@ The core is an importable library at module root (`github.com/cosgroveb/hew`). T
 hew/                    # core: types, interfaces, Agent, events (root go.mod, stdlib only)
 ├── anthropic/          # Anthropic Messages API adapter
 ├── openai/             # OpenAI-compatible adapter
-├── cmd/hew/            # TUI frontend (own go.mod with charm deps)
-└── cmd/hew-core/       # Plain CLI (under root go.mod, no external deps)
+├── cmd/hew/            # Plain CLI (under root go.mod, no external deps)
+└── cmd/hui/            # TUI frontend (own go.mod with charm deps)
 ```
 
 **Two binaries:**
-- `cmd/hew/` — bubbletea TUI (own go.mod with charm v2 deps). Detects non-TTY stdout and falls back to plain-text rendering.
-- `cmd/hew-core/` — original plain CLI (under root go.mod, stdlib only).
+- `cmd/hew/` — plain CLI (under root go.mod, stdlib only).
+- `cmd/hui/` — bubbletea TUI (own go.mod with charm v2 deps). Detects non-TTY stdout and falls back to plain-text rendering.
 
-**Multi-module:** `cmd/hew/` has its own `go.mod`. Root `go test ./...` does not descend into it. Use `make test` to test both modules. `go install github.com/cosgroveb/hew/cmd/hew@latest` does NOT work due to replace directive — use `make build` or install from releases.
+**Multi-module:** `cmd/hui/` has its own `go.mod`. Root `go test ./...` does not descend into it. Use `make test` to test both modules. `go install github.com/cosgroveb/hew/cmd/hui@latest` does NOT work due to replace directive — use `make build-hui` or install from releases.
 
 **Two-tier agent API:**
 - `Step(ctx) (StepResult, error)` — one query-parse-execute cycle, no policy. `StepResult` carries the response, parsed action, command output, and execution error.

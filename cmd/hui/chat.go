@@ -9,15 +9,16 @@ import (
 )
 
 type chatModel struct {
-	viewport    viewport.Model
-	content     *strings.Builder
-	streamBuf   *strings.Builder
-	pendingCmd  string
-	streaming   bool
-	wasAtBottom bool
-	hasNew      bool // new content arrived while scrolled up
-	verbose     bool
-	styles      *styles
+	viewport     viewport.Model
+	content      *strings.Builder
+	streamBuf    *strings.Builder
+	pendingCmd   string
+	pendingQuery string
+	streaming    bool
+	wasAtBottom  bool
+	hasNew       bool // new content arrived while scrolled up
+	verbose      bool
+	styles       *styles
 	// lastCmd caches the raw command text from EventCommandStart
 	// for use in the EventCommandDone commit line.
 	lastCmd string
@@ -41,6 +42,7 @@ func (c *chatModel) appendToken(text string) {
 		c.streaming = true
 		c.wasAtBottom = c.viewport.AtBottom()
 		c.streamBuf.Reset()
+		c.pendingQuery = ""
 	}
 	c.streamBuf.WriteString(text)
 }
@@ -68,6 +70,7 @@ func (c *chatModel) resetStreaming() {
 func (c *chatModel) appendEvent(e hew.Event) {
 	switch ev := e.(type) {
 	case hew.EventResponse:
+		c.pendingQuery = ""
 		if c.streaming {
 			c.commitStream(ev.Message.Content)
 		} else {
@@ -102,6 +105,9 @@ func (c *chatModel) appendEvent(e hew.Event) {
 	case hew.EventDebug:
 		if ev.Message == "querying model..." {
 			c.resetStreaming()
+			c.pendingQuery = c.styles.Chat.CommandPending.Render(
+				fmt.Sprintf("%s thunking...", iconPending),
+			)
 		}
 		if c.verbose {
 			c.content.WriteString(c.styles.Chat.Debug.Render(
@@ -114,7 +120,7 @@ func (c *chatModel) appendEvent(e hew.Event) {
 }
 
 func (c *chatModel) updateViewport() {
-	full := c.content.String() + c.pendingCmd + c.streamBuf.String()
+	full := c.content.String() + c.pendingQuery + c.pendingCmd + c.streamBuf.String()
 	wasBottom := c.wasAtBottom
 	if !c.streaming {
 		wasBottom = c.viewport.AtBottom()

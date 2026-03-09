@@ -1,4 +1,4 @@
-module github.com/cosgroveb/hew/cmd/hew
+module github.com/cosgroveb/hew/cmd/hui
 
 go 1.25.6
 

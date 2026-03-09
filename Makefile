@@ -1,44 +1,44 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
-BIN := hew
 
-.DEFAULT_GOAL := build
-.PHONY: build build-core build-all install clean test vet fmt lint check run help setup man check-man
+.DEFAULT_GOAL := build-all
+.PHONY: build build-hui build-all install clean test vet fmt lint check run help setup man check-man
 
-build: ## Build TUI binary
-	cd cmd/hew && go build -trimpath -ldflags '$(LDFLAGS)' -o ../../$(BIN) .
+build: ## Build plain CLI binary
+	go build -trimpath -ldflags '$(LDFLAGS)' -o hew ./cmd/hew/
 
-build-core: ## Build plain CLI binary
-	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN)-core ./cmd/hew-core/
+build-hui: ## Build TUI binary
+	cd cmd/hui && go build -trimpath -ldflags '$(LDFLAGS)' -o ../../hui .
 
-build-all: build build-core ## Build both binaries
+build-all: build build-hui ## Build both binaries
 
-install: ## Install TUI binary
-	cd cmd/hew && go install -ldflags '$(LDFLAGS)' .
+install: build-all ## Install both binaries
+	go install -ldflags '$(LDFLAGS)' ./cmd/hew/
+	cd cmd/hui && go install -ldflags '$(LDFLAGS)' .
 
 clean: ## Remove build artifacts
-	rm -f $(BIN) $(BIN)-core
+	rm -f hew hui
 
 test: ## Run all tests
 	go test ./... -v
-	cd cmd/hew && go test ./... -v
+	cd cmd/hui && go test ./... -v
 
 vet: ## Run go vet
 	go vet ./...
-	cd cmd/hew && go vet ./...
+	cd cmd/hui && go vet ./...
 
 fmt: ## Format source code
 	go fmt ./...
-	cd cmd/hew && go fmt ./...
+	cd cmd/hui && go fmt ./...
 
 lint: ## Run linters
 	golangci-lint run ./...
-	cd cmd/hew && golangci-lint run ./...
+	cd cmd/hui && golangci-lint run ./...
 
 check: lint test ## Run lint and tests
 
-run: build ## Build and start
-	./$(BIN)
+run: build-hui ## Build and start TUI
+	./hui
 
 man: ## Generate man page from markdown
 	go-md2man -in doc/hew.1.md -out doc/hew.1
