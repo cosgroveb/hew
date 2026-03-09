@@ -46,8 +46,7 @@ func (c *chatModel) appendToken(text string) {
 }
 
 func (c *chatModel) commitStream(authoritative string) {
-	c.content.WriteString(authoritative)
-	c.content.WriteString("\n\n")
+	c.writeRendered(authoritative)
 	c.streamBuf.Reset()
 	c.streaming = false
 }
@@ -72,8 +71,7 @@ func (c *chatModel) appendEvent(e hew.Event) {
 		if c.streaming {
 			c.commitStream(ev.Message.Content)
 		} else {
-			c.content.WriteString(ev.Message.Content)
-			c.content.WriteString("\n\n")
+			c.writeRendered(ev.Message.Content)
 		}
 	case hew.EventCommandStart:
 		c.lastCmd = ev.Command
@@ -132,9 +130,17 @@ func (c *chatModel) updateViewport() {
 	}
 }
 
+// writeRendered renders markdown content through glamour and appends to committed content.
+func (c *chatModel) writeRendered(content string) {
+	rendered := renderMarkdown(content, c.viewport.Width())
+	c.content.WriteString(rendered)
+}
+
 func (c *chatModel) resize(width, height int) {
 	c.viewport.SetWidth(width)
 	c.viewport.SetHeight(height)
+	// Reset renderer on width change so glamour re-wraps
+	renderer = nil
 }
 
 // summarizeCommand returns a short display form of a command.
