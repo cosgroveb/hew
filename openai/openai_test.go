@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/cosgroveb/hew"
@@ -325,6 +326,40 @@ func TestQueryStream(t *testing.T) {
 		}
 		if resp.Message.Content != "ok" {
 			t.Errorf("got content %q, want %q", resp.Message.Content, "ok")
+		}
+	})
+
+	t.Run("surfaces non-SSE JSON error mid-stream", func(t *testing.T) {
+		var tokenCount int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			f := w.(http.Flusher)
+			writeLine(w, `data: {"choices":[{"delta":{"content":"partial"}}],"usage":null}`)
+			writeBlank(w)
+			f.Flush()
+			// Provider sends raw JSON error outside the SSE framing (e.g. Gemini)
+			writeLine(w, `[{`)
+			writeLine(w, `  "error": {`)
+			writeLine(w, `    "code": 500,`)
+			writeLine(w, `    "message": "Internal error encountered.",`)
+			writeLine(w, `    "status": "INTERNAL"`)
+			writeLine(w, `  }`)
+			writeLine(w, `}]`)
+		}))
+		defer server.Close()
+
+		m := openai.NewModel(server.URL, "test-key", "gpt-test", "sys")
+		_, err := m.QueryStream(context.Background(), []hew.Message{{Role: "user", Content: "hi"}}, func(string) {
+			tokenCount++
+		})
+		if err == nil {
+			t.Fatal("expected error on mid-stream JSON error")
+		}
+		if !strings.Contains(err.Error(), "Internal error encountered") {
+			t.Errorf("expected error to contain API message, got: %v", err)
+		}
+		if tokenCount != 1 {
+			t.Errorf("expected 1 token before error, got %d", tokenCount)
 		}
 	})
 }
