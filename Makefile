@@ -3,32 +3,41 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 BIN := hew
 
 .DEFAULT_GOAL := build
-.PHONY: build install clean test vet fmt lint check run help setup man check-man
+.PHONY: build build-core build-all install clean test vet fmt lint check run help setup man check-man
 
-build: ## Compile binary
-	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/hew/
+build: ## Build TUI binary
+	cd cmd/hew && go build -trimpath -ldflags '$(LDFLAGS)' -o ../../$(BIN) .
 
-install: ## Install to GOPATH/bin
-	go install -ldflags '$(LDFLAGS)' ./cmd/hew/
+build-core: ## Build plain CLI binary
+	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN)-core ./cmd/hew-core/
+
+build-all: build build-core ## Build both binaries
+
+install: ## Install TUI binary
+	cd cmd/hew && go install -ldflags '$(LDFLAGS)' .
 
 clean: ## Remove build artifacts
-	rm -f $(BIN)
+	rm -f $(BIN) $(BIN)-core
 
-test: ## Run tests
+test: ## Run all tests
 	go test ./... -v
+	cd cmd/hew && go test ./... -v
 
 vet: ## Run go vet
 	go vet ./...
+	cd cmd/hew && go vet ./...
 
 fmt: ## Format source code
 	go fmt ./...
+	cd cmd/hew && go fmt ./...
 
 lint: ## Run linters
 	golangci-lint run ./...
+	cd cmd/hew && golangci-lint run ./...
 
 check: lint test ## Run lint and tests
 
-run: build ## Build and start REPL
+run: build ## Build and start
 	./$(BIN)
 
 man: ## Generate man page from markdown
@@ -42,7 +51,7 @@ check-man: ## Verify committed man page is up-to-date
 	@echo "man page is up-to-date"
 
 help: ## Show available targets
-	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | sort | awk -F ':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
+	@grep -E '^[a-z][-a-z]+:.*##' $(MAKEFILE_LIST) | sort | awk -F ':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
 
 setup: ## Install git hooks
 	ln -sf ../../scripts/pre-commit .git/hooks/pre-commit

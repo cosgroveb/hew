@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -9,9 +10,7 @@ import (
 	"os/signal"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/term"
-	hew "github.com/cosgroveb/hew"
+	"github.com/cosgroveb/hew"
 	"github.com/cosgroveb/hew/anthropic"
 	"github.com/cosgroveb/hew/openai"
 )
@@ -57,7 +56,7 @@ Environment:
 	verbose := flags.Bool("verbose", false, "")
 	verboseShort := flags.Bool("v", false, "")
 	showVersion := flags.Bool("version", false, "")
-	eventLogPath := flags.String("event-log", "", "")
+	eventLog := flags.String("event-log", "", "")
 	trajectory := flags.String("trajectory", "", "")
 	loadMessages := flags.String("load-messages", "", "")
 
@@ -74,11 +73,13 @@ Environment:
 		os.Exit(0)
 	}
 
+	// --prompt and -p are aliases; prefer whichever is set
 	taskPrompt := *prompt
 	if *promptLong != "" {
 		taskPrompt = *promptLong
 	}
 
+	// Resolve model: flag > env > default
 	if *modelFlag == "" {
 		if env := os.Getenv("HEW_MODEL"); env != "" {
 			*modelFlag = env
@@ -87,6 +88,7 @@ Environment:
 		}
 	}
 
+	// Resolve base URL: flag > env > default
 	baseURLSource := "default"
 	if *baseURL == "" {
 		if env := os.Getenv("HEW_BASE_URL"); env != "" {
@@ -103,6 +105,7 @@ Environment:
 		os.Exit(1)
 	}
 
+	// Resolve API key: HEW_API_KEY > ANTHROPIC_API_KEY (Anthropic only)
 	apiKey := os.Getenv("HEW_API_KEY")
 	if apiKey == "" && strings.Contains(*baseURL, "anthropic.com") {
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
@@ -116,11 +119,6 @@ Environment:
 		os.Exit(1)
 	}
 
-	if *trajectory != "" && taskPrompt == "" {
-		fmt.Fprintln(os.Stderr, "Error: --trajectory requires -p (single-task mode)")
-		os.Exit(1)
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot get working directory: %v\n", err)
@@ -128,10 +126,11 @@ Environment:
 	}
 
 	var eventLogFile *os.File
-	if *eventLogPath != "" {
-		eventLogFile, err = os.OpenFile(*eventLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if *eventLog != "" {
+		var err error
+		eventLogFile, err = os.OpenFile(*eventLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot open event log %q: %v\n", *eventLogPath, err)
+			fmt.Fprintf(os.Stderr, "Error: cannot open event log %q: %v\n", *eventLog, err)
 			os.Exit(1)
 		}
 		defer eventLogFile.Close() //nolint:errcheck
@@ -139,19 +138,42 @@ Environment:
 
 	systemPrompt := hew.LoadPrompt(cwd)
 
-	var llm hew.Model
+	var model hew.Model
 	if strings.Contains(*baseURL, "anthropic.com") {
-		llm = anthropic.NewModel(*baseURL, apiKey, *modelFlag, systemPrompt)
+		model = anthropic.NewModel(*baseURL, apiKey, *modelFlag, systemPrompt)
 	} else {
-		llm = openai.NewModel(*baseURL, apiKey, *modelFlag, systemPrompt)
+		model = openai.NewModel(*baseURL, apiKey, *modelFlag, systemPrompt)
 	}
 
-	agent := hew.NewAgent(llm, &hew.CommandExecutor{}, cwd)
+	executor := &hew.CommandExecutor{}
+
+	agent := hew.NewAgent(model, executor, cwd)
+
+	showDebug := *verbose || *verboseShort
+	agent.Notify = func(e hew.Event) {
+		switch e := e.(type) {
+		case hew.EventResponse:
+			fmt.Fprintln(os.Stdout, e.Message.Content) //nolint:errcheck
+		case hew.EventCommandStart:
+			fmt.Fprintf(os.Stdout, "--- running: %s ---\n", summarizeCommand(e.Command)) //nolint:errcheck
+		case hew.EventCommandDone:
+			fmt.Fprintln(os.Stdout, e.Output)       //nolint:errcheck
+			fmt.Fprintln(os.Stdout, "--- done ---") //nolint:errcheck
+		case hew.EventFormatError:
+			// handled by agent loop; nothing to print
+		case hew.EventDebug:
+			if showDebug {
+				fmt.Fprintf(os.Stderr, "[hew] %s\n", e.Message)
+			}
+		}
+		if eventLogFile != nil {
+			writeEventLog(eventLogFile, e)
+		}
+	}
+
 	if *maxSteps > 0 {
 		agent.MaxSteps = *maxSteps
 	}
-
-	showDebug := *verbose || *verboseShort
 
 	if *loadMessages != "" {
 		data, err := os.ReadFile(*loadMessages)
@@ -170,115 +192,106 @@ Environment:
 		}
 	}
 
-	// TTY detection: if stdout is not a terminal, use plain-text rendering
-	if !term.IsTerminal(os.Stdout.Fd()) {
-		runPlain(agent, taskPrompt, *trajectory, eventLogFile, showDebug)
-		return
-	}
-
-	runTUI(agent, taskPrompt, *trajectory, eventLogFile, showDebug)
-}
-
-func runTUI(agent *hew.Agent, taskPrompt, trajectory string, eventLog *os.File, verbose bool) {
-	if taskPrompt == "" {
-		fmt.Fprintf(os.Stderr, "Error: conversational mode not yet implemented; use -p\n")
+	if *trajectory != "" && taskPrompt == "" {
+		fmt.Fprintln(os.Stderr, "Error: --trajectory requires -p (single-task mode)")
 		os.Exit(1)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	eventCh := make(chan hew.Event, eventChSize)
-	agent.Notify = makeNotify(eventCh, eventLog)
-
-	s := defaultStyles(true) // TODO: detect actual background
-	m := newModel(eventCh, s, verbose, cancel)
-	m.running = true
-
-	p := tea.NewProgram(m)
-
-	// Launch agent in goroutine. When Run finishes, close the channel
-	// and inject agentDoneMsg directly into bubbletea's message queue.
-	go func() {
+	if taskPrompt != "" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
 		runErr := agent.Run(ctx, taskPrompt)
-		close(eventCh)
-		p.Send(agentDoneMsg{err: runErr})
-	}()
+		if *trajectory != "" {
+			msgs := agent.Messages()
+			data, err := json.MarshalIndent(msgs, "", "  ")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot marshal trajectory: %v\n", err)
+				if runErr != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", runErr)
+				}
+				os.Exit(1)
+			}
+			if err := os.WriteFile(*trajectory, data, 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: cannot write trajectory %q: %v\n", *trajectory, err)
+				if runErr != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", runErr)
+				}
+				os.Exit(1)
+			}
+		}
+		if runErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", runErr)
+			os.Exit(1)
+		}
+		return
+	}
 
-	finalModel, err := p.Run()
-	if err != nil {
+	// REPL mode — fresh context per run so Ctrl-C cancels the current
+	// operation without killing the REPL.
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Print("hew> ")
+		if !scanner.Scan() {
+			break
+		}
+		input := strings.TrimSpace(scanner.Text())
+		if input == "" {
+			continue
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		if err := agent.Run(ctx, input); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
+		stop()
+	}
+	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Extract the agent error from the final model — no shared variable needed.
-	fm, ok := finalModel.(model)
-	if !ok {
-		os.Exit(1)
-	}
-
-	if trajectory != "" {
-		writeTrajectory(agent, trajectory)
-	}
-
-	if fm.agentErr != nil {
-		os.Exit(1)
-	}
 }
 
-// runPlain provides plain-text output for non-TTY environments.
-// Matches hew-core behavior. ~30 lines of duplicated Notify logic.
-func runPlain(agent *hew.Agent, taskPrompt, trajectory string, eventLog *os.File, verbose bool) {
-	if taskPrompt == "" {
-		fmt.Fprintf(os.Stderr, "Error: non-interactive mode requires -p\n")
-		os.Exit(1)
-	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
-	agent.Notify = func(e hew.Event) {
-		if eventLog != nil {
-			writeEventLog(eventLog, e)
-		}
-		switch ev := e.(type) {
-		case hew.EventResponse:
-			fmt.Fprintln(os.Stdout, ev.Message.Content) //nolint:errcheck
-		case hew.EventCommandStart:
-			fmt.Fprintf(os.Stdout, "--- running: %s ---\n", summarizeCommand(ev.Command)) //nolint:errcheck
-		case hew.EventCommandDone:
-			fmt.Fprintln(os.Stdout, ev.Output)      //nolint:errcheck
-			fmt.Fprintln(os.Stdout, "--- done ---") //nolint:errcheck
-		case hew.EventFormatError:
-			// handled by agent loop
-		case hew.EventDebug:
-			if verbose {
-				fmt.Fprintf(os.Stderr, "[hew] %s\n", ev.Message)
-			}
-		default:
-		}
-	}
-
-	runErr := agent.Run(ctx, taskPrompt)
-
-	if trajectory != "" {
-		writeTrajectory(agent, trajectory)
-	}
-
-	if runErr != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", runErr)
-		os.Exit(1)
-	}
+type jsonEvent struct {
+	Type    string `json:"type"`
+	Payload any    `json:"payload"`
 }
 
-func writeTrajectory(agent *hew.Agent, path string) {
-	msgs := agent.Messages()
-	data, err := json.MarshalIndent(msgs, "", "  ")
+func writeEventLog(f *os.File, e hew.Event) {
+	var je jsonEvent
+	switch e := e.(type) {
+	case hew.EventResponse:
+		je = jsonEvent{Type: "response", Payload: e}
+	case hew.EventCommandStart:
+		je = jsonEvent{Type: "command_start", Payload: e}
+	case hew.EventCommandDone:
+		je = jsonEvent{Type: "command_done", Payload: struct {
+			Output string `json:"output"`
+			Err    string `json:"err,omitempty"`
+		}{Output: e.Output, Err: errString(e.Err)}}
+	case hew.EventFormatError:
+		je = jsonEvent{Type: "format_error", Payload: e}
+	case hew.EventDebug:
+		je = jsonEvent{Type: "debug", Payload: e}
+	}
+	data, err := json.Marshal(je)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot marshal trajectory: %v\n", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot write trajectory %q: %v\n", path, err)
+	data = append(data, '\n')
+	f.Write(data) //nolint:errcheck
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
 	}
+	return err.Error()
+}
+
+func summarizeCommand(cmd string) string {
+	lines := strings.Split(cmd, "\n")
+	first := lines[0]
+	if len(lines) == 1 {
+		return first
+	}
+	return fmt.Sprintf("%s ... (%d lines)", first, len(lines))
 }

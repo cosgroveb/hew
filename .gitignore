@@ -1,5 +1,8 @@
-# Binary
+# Binaries
 /hew
+/hew-core
+/cmd/hew/hew
+/cmd/hew-core/hew-core
 
 # Test binary
 *.test
