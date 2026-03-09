@@ -126,9 +126,9 @@ func (m model) handleViewportKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyRunes && len(msg.String()) > 0 {
 		switch msg.String()[0] {
 		case 'j':
-			m.chat.viewport.LineDown(1)
+			m.chat.viewport.LineDown(1) //nolint:staticcheck
 		case 'k':
-			m.chat.viewport.LineUp(1)
+			m.chat.viewport.LineUp(1) //nolint:staticcheck
 		case 'G':
 			m.chat.viewport.GotoBottom()
 			m.chat.hasNew = false

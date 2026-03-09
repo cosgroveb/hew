@@ -63,14 +63,14 @@ func TestNotifyWritesEventLogWhenChannelFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(f.Name())
-	defer f.Close()
+	defer os.Remove(f.Name()) //nolint:errcheck
+	defer f.Close()           //nolint:errcheck
 
 	notify := makeNotify(ch, f)
 	// Use EventDebug to trigger log write
 	notify(hew.EventDebug{Message: "log entry"})
 
-	f.Seek(0, 0)
+	f.Seek(0, 0) //nolint:errcheck
 	data, _ := os.ReadFile(f.Name())
 	if len(data) == 0 {
 		t.Fatal("event log file is empty — write was dropped")

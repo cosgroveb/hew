@@ -73,7 +73,7 @@ func writeEventLog(f *os.File, e hew.Event) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(f, "%s\n", data)
+	fmt.Fprintf(f, "%s\n", data) //nolint:errcheck
 }
 
 func errString(err error) string {

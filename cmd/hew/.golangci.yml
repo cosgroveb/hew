@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - exhaustive
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    staticcheck:
+      checks:
+        - "all"
+        - "-ST1000" # don't require package comments
+        - "-S1016"  # allow explicit struct literals over type conversions
+
+formatters:
+  enable:
+    - gofmt
