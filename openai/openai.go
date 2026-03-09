@@ -200,6 +200,7 @@ func (m *Model) QueryStream(ctx context.Context, messages []hew.Message, onToken
 	complete := false
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
 	for scanner.Scan() {
 		line := scanner.Text()
 		data, ok := parseSSEData(line)
@@ -228,7 +229,7 @@ func (m *Model) QueryStream(ctx context.Context, messages []hew.Message, onToken
 		return hew.Response{}, fmt.Errorf("read stream: %w", err)
 	}
 	if !complete {
-		return hew.Response{}, fmt.Errorf("stream ended without [DONE]")
+		return hew.Response{}, fmt.Errorf("stream interrupted: response ended before completion")
 	}
 
 	return hew.Response{
