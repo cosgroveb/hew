@@ -180,30 +180,58 @@ Environment:
 }
 
 func runTUI(agent *hew.Agent, taskPrompt, trajectory string, eventLog *os.File, verbose bool) {
-	if taskPrompt == "" {
-		fmt.Fprintf(os.Stderr, "Error: conversational mode not yet implemented; use -p\n")
-		os.Exit(1)
+	s := defaultStyles(true) // TODO: detect actual background
+
+	if taskPrompt != "" {
+		// Single-task mode: set up event channel and launch agent immediately
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		eventCh := make(chan hew.Event, eventChSize)
+		agent.Notify = makeNotify(eventCh, eventLog)
+
+		m := newModel(eventCh, s, verbose, cancel)
+		m.shared.agent = agent
+		m.shared.eventLog = eventLog
+		m.running = true
+
+		p := tea.NewProgram(m)
+		m.shared.program = p
+
+		go func() {
+			runErr := agent.Run(ctx, taskPrompt)
+			close(eventCh)
+			p.Send(agentDoneMsg{err: runErr})
+		}()
+
+		finalModel, err := p.Run()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		fm, ok := finalModel.(model)
+		if !ok {
+			os.Exit(1)
+		}
+
+		if trajectory != "" {
+			writeTrajectory(agent, trajectory)
+		}
+
+		if fm.agentErr != nil {
+			os.Exit(1)
+		}
+		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	eventCh := make(chan hew.Event, eventChSize)
-	agent.Notify = makeNotify(eventCh, eventLog)
-
-	s := defaultStyles(true) // TODO: detect actual background
-	m := newModel(eventCh, s, verbose, cancel)
-	m.running = true
+	// Conversational REPL mode: start with empty input, user types tasks
+	m := newModel(nil, s, verbose, nil)
+	m.shared.agent = agent
+	m.shared.eventLog = eventLog
 
 	p := tea.NewProgram(m)
-
-	// Launch agent in goroutine. When Run finishes, close the channel
-	// and inject agentDoneMsg directly into bubbletea's message queue.
-	go func() {
-		runErr := agent.Run(ctx, taskPrompt)
-		close(eventCh)
-		p.Send(agentDoneMsg{err: runErr})
-	}()
+	m.shared.program = p
 
 	finalModel, err := p.Run()
 	if err != nil {
@@ -211,14 +239,9 @@ func runTUI(agent *hew.Agent, taskPrompt, trajectory string, eventLog *os.File, 
 		os.Exit(1)
 	}
 
-	// Extract the agent error from the final model — no shared variable needed.
 	fm, ok := finalModel.(model)
 	if !ok {
 		os.Exit(1)
-	}
-
-	if trajectory != "" {
-		writeTrajectory(agent, trajectory)
 	}
 
 	if fm.agentErr != nil {

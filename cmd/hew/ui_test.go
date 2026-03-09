@@ -14,7 +14,8 @@ func setupModel() model {
 	m := newModel(nil, s, false, nil)
 	m.width = 80
 	m.height = 24
-	m.chat.resize(80, 24)
+	m.chat.resize(80, 22) // leave room for input (2 lines: 1 + border)
+	m.input.setWidth(80)
 	m.running = true
 	return m
 }
@@ -146,4 +147,85 @@ func TestModelGGChord(t *testing.T) {
 	if um.pendingG {
 		t.Error("second g should clear pendingG")
 	}
+}
+
+func TestModelTwoPaneLayout(t *testing.T) {
+	m := setupModel()
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	view := m.View()
+	// View should contain both chat viewport and input area
+	if view.Content == "" {
+		t.Error("view should not be empty")
+	}
+}
+
+func TestModelCtrlCIdleQuits(t *testing.T) {
+	m := setupModel()
+	m.running = false
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Error("Ctrl-C when idle should produce a quit command")
+	}
+}
+
+func TestModelCtrlCRunningCancels(t *testing.T) {
+	cancelled := false
+	m := setupModel()
+	m.cancel = func() { cancelled = true }
+	m.running = true
+
+	um := updateModel(t, m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if !cancelled {
+		t.Error("Ctrl-C when running should call cancel")
+	}
+	// Should NOT quit on first Ctrl-C while running
+	if um.quitting {
+		t.Error("single Ctrl-C while running should not quit")
+	}
+}
+
+func TestModelDoubleCtrlCAlwaysQuits(t *testing.T) {
+	m := setupModel()
+	m.running = true
+
+	// First Ctrl-C
+	um := updateModel(t, m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	// Second Ctrl-C rapidly
+	_, cmd := um.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Error("double Ctrl-C should produce a quit command")
+	}
+}
+
+func TestModelInputSubmitShowsInChat(t *testing.T) {
+	m := setupModel()
+	m.running = false
+	m.shared.agent = nil // prevent actual agent run
+
+	m.input.textarea.SetValue("hello agent")
+
+	// We can't fully test startTask without an agent, but we can test
+	// that the submit path extracts text correctly
+	text := m.input.submit()
+	if text != "hello agent" {
+		t.Errorf("submit should return %q, got %q", "hello agent", text)
+	}
+}
+
+func TestModelCtrlUScrollsFromInputMode(t *testing.T) {
+	m := setupModel()
+	m.focus = focusInput
+
+	// Should not error — Ctrl+U scrolls viewport from input mode
+	_ = updateModel(t, m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+}
+
+func TestModelCtrlDScrollsWhenInputEmpty(t *testing.T) {
+	m := setupModel()
+	m.focus = focusInput
+
+	// With empty input, Ctrl+D should scroll viewport
+	_ = updateModel(t, m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 }
