@@ -28,6 +28,9 @@ const ctrlCInterval = 500 * time.Millisecond
 
 type agentDoneMsg struct{ err error }
 
+// tickMsg is sent by the elapsed-time ticker while the agent is running.
+type tickMsg time.Time
+
 // shared holds references that must survive bubbletea's value-copy of model.
 // Bubbletea copies the model on NewProgram, so pointers stored directly in
 // model fields are stale after that copy. This struct is allocated once and
@@ -41,6 +44,7 @@ type shared struct {
 type model struct {
 	chat      chatModel
 	input     inputModel
+	status    statusModel
 	styles    *styles
 	shared    *shared
 	eventCh   <-chan hew.Event
@@ -57,16 +61,26 @@ type model struct {
 	lastCtrlC time.Time
 }
 
-func newModel(eventCh <-chan hew.Event, s *styles, verbose bool, cancel context.CancelFunc) model {
+type modelOpts struct {
+	eventCh   <-chan hew.Event
+	styles    *styles
+	verbose   bool
+	cancel    context.CancelFunc
+	modelName string
+	maxSteps  int
+}
+
+func newModel(opts modelOpts) model {
 	return model{
-		chat:    newChatModel(0, 0, s, verbose),
-		input:   newInputModel(0, &s.Input),
-		styles:  s,
+		chat:    newChatModel(0, 0, opts.styles, opts.verbose),
+		input:   newInputModel(0, &opts.styles.Input),
+		status:  newStatusModel(opts.modelName, opts.maxSteps, &opts.styles.Status),
+		styles:  opts.styles,
 		shared:  &shared{},
-		eventCh: eventCh,
-		cancel:  cancel,
+		eventCh: opts.eventCh,
+		cancel:  opts.cancel,
 		focus:   focusInput,
-		verbose: verbose,
+		verbose: opts.verbose,
 	}
 }
 
@@ -102,6 +116,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentDoneMsg:
 		m.running = false
 		m.agentErr = msg.err
+		m.status.stopRun()
 		if m.chat.streaming {
 			m.chat.commitPartialStream()
 		}
@@ -115,9 +130,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case eventMsg:
-		m.chat.appendEvent(msg.event)
+		m.routeEvent(msg.event)
 		m.chat.updateViewport()
 		return m, eventBridge(m.eventCh)
+
+	case tickMsg:
+		if m.running {
+			return m, tickCmd()
+		}
+		return m, nil
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -131,15 +152,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+const statusHeight = 1
+
 func (m *model) recalcLayout() {
 	ih := m.inputHeight()
-	chatHeight := m.height - ih
+	chatHeight := m.height - statusHeight - ih
 	if chatHeight < 1 {
 		chatHeight = 1
 	}
 	m.chat.resize(m.width, chatHeight)
 	m.chat.updateViewport()
 	m.input.setWidth(m.width)
+}
+
+// routeEvent dispatches a core library event to the appropriate sub-models.
+func (m *model) routeEvent(e hew.Event) {
+	m.chat.appendEvent(e)
+	switch ev := e.(type) {
+	case hew.EventResponse:
+		m.status.updateFromResponse(ev.Usage)
+	case hew.EventCommandDone:
+		_ = ev
+		m.status.incrementStep()
+	case hew.EventCommandStart, hew.EventFormatError, hew.EventDebug:
+		// handled by chat.appendEvent only
+	default:
+	}
+}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
 }
 
 func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -161,11 +205,13 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case msg.Code == tea.KeyEscape:
 		m.focus = focusViewport
+		m.status.setFocus(focusViewport)
 		m.input.textarea.Blur()
 		return m, nil
 
 	case msg.Code == 'i' && m.focus == focusViewport:
 		m.focus = focusInput
+		m.status.setFocus(focusInput)
 		return m, m.input.textarea.Focus()
 
 	case msg.Code == 'q' && m.focus == focusViewport:
@@ -265,6 +311,7 @@ func (m model) startTask(task string) (tea.Model, tea.Cmd) {
 	m.chat.updateViewport()
 
 	m.running = true
+	m.status.startRun()
 
 	// Create new context for this task
 	ctx, cancel := context.WithCancel(context.Background())
@@ -284,7 +331,7 @@ func (m model) startTask(task string) (tea.Model, tea.Cmd) {
 		return nil
 	}
 
-	return m, tea.Batch(cmd, eventBridge(eventCh))
+	return m, tea.Batch(cmd, eventBridge(eventCh), tickCmd())
 }
 
 func (m model) handleViewportKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -338,7 +385,8 @@ func (m model) View() tea.View {
 		chatView += "\n" + indicator
 	}
 
+	statusView := m.status.view(m.width)
 	inputView := m.input.view()
 
-	return tea.NewView(chatView + "\n" + inputView)
+	return tea.NewView(chatView + "\n" + statusView + "\n" + inputView)
 }

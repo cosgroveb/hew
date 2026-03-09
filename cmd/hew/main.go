@@ -176,10 +176,10 @@ Environment:
 		return
 	}
 
-	runTUI(agent, taskPrompt, *trajectory, eventLogFile, showDebug)
+	runTUI(agent, taskPrompt, *trajectory, *modelFlag, eventLogFile, showDebug)
 }
 
-func runTUI(agent *hew.Agent, taskPrompt, trajectory string, eventLog *os.File, verbose bool) {
+func runTUI(agent *hew.Agent, taskPrompt, trajectory, modelName string, eventLog *os.File, verbose bool) {
 	s := defaultStyles(true) // TODO: detect actual background
 
 	if taskPrompt != "" {
@@ -190,10 +190,18 @@ func runTUI(agent *hew.Agent, taskPrompt, trajectory string, eventLog *os.File, 
 		eventCh := make(chan hew.Event, eventChSize)
 		agent.Notify = makeNotify(eventCh, eventLog)
 
-		m := newModel(eventCh, s, verbose, cancel)
+		m := newModel(modelOpts{
+			eventCh:   eventCh,
+			styles:    s,
+			verbose:   verbose,
+			cancel:    cancel,
+			modelName: modelName,
+			maxSteps:  agent.MaxSteps,
+		})
 		m.shared.agent = agent
 		m.shared.eventLog = eventLog
 		m.running = true
+		m.status.startRun()
 
 		p := tea.NewProgram(m)
 		m.shared.program = p
@@ -226,7 +234,12 @@ func runTUI(agent *hew.Agent, taskPrompt, trajectory string, eventLog *os.File, 
 	}
 
 	// Conversational REPL mode: start with empty input, user types tasks
-	m := newModel(nil, s, verbose, nil)
+	m := newModel(modelOpts{
+		styles:    s,
+		verbose:   verbose,
+		modelName: modelName,
+		maxSteps:  agent.MaxSteps,
+	})
 	m.shared.agent = agent
 	m.shared.eventLog = eventLog
 

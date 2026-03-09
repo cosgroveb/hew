@@ -11,10 +11,14 @@ import (
 
 func setupModel() model {
 	s := defaultStyles(true)
-	m := newModel(nil, s, false, nil)
+	m := newModel(modelOpts{
+		styles:    s,
+		modelName: "test-model",
+		maxSteps:  100,
+	})
 	m.width = 80
 	m.height = 24
-	m.chat.resize(80, 22) // leave room for input (2 lines: 1 + border)
+	m.chat.resize(80, 21) // leave room for status (1) + input (2)
 	m.input.setWidth(80)
 	m.running = true
 	return m
@@ -228,4 +232,61 @@ func TestModelCtrlDScrollsWhenInputEmpty(t *testing.T) {
 
 	// With empty input, Ctrl+D should scroll viewport
 	_ = updateModel(t, m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+}
+
+func TestModelViewContainsStatusBar(t *testing.T) {
+	m := setupModel()
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	view := m.View()
+	if !strings.Contains(view.Content, "test-model") {
+		t.Error("view should contain model name from status bar")
+	}
+}
+
+func TestModelEventResponseUpdatesStatus(t *testing.T) {
+	m := setupModel()
+	m = updateModel(t, m, eventMsg{event: hew.EventResponse{
+		Message: hew.Message{Role: "assistant", Content: "hi"},
+		Usage:   hew.Usage{InputTokens: 500, OutputTokens: 200},
+	}})
+
+	if m.status.inputTokens != 500 {
+		t.Errorf("inputTokens = %d, want 500", m.status.inputTokens)
+	}
+	if m.status.outputTokens != 200 {
+		t.Errorf("outputTokens = %d, want 200", m.status.outputTokens)
+	}
+}
+
+func TestModelCommandDoneIncrementsStep(t *testing.T) {
+	m := setupModel()
+	m = updateModel(t, m, eventMsg{event: hew.EventCommandStart{Command: "ls", Dir: "."}})
+	m = updateModel(t, m, eventMsg{event: hew.EventCommandDone{Output: "ok", Err: nil}})
+
+	if m.status.stepCount != 1 {
+		t.Errorf("stepCount = %d, want 1", m.status.stepCount)
+	}
+}
+
+func TestModelFocusChangeUpdatesStatus(t *testing.T) {
+	m := setupModel()
+	m = updateModel(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.status.focus != focusViewport {
+		t.Error("status focus should be viewport after Esc")
+	}
+
+	m = updateModel(t, m, tea.KeyPressMsg{Code: 'i'})
+	if m.status.focus != focusInput {
+		t.Error("status focus should be input after i")
+	}
+}
+
+func TestModelAgentDoneStopsStatusTimer(t *testing.T) {
+	m := setupModel()
+	m.status.startRun()
+	m = updateModel(t, m, agentDoneMsg{err: nil})
+
+	if m.status.running {
+		t.Error("status.running should be false after agentDoneMsg")
+	}
 }
