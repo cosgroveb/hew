@@ -65,6 +65,8 @@ hew --base-url https://generativelanguage.googleapis.com/v1beta/openai --model g
 --trajectory string      Write message history as JSON on exit (single-task mode only)
 -v, --verbose            Show internal decisions on stderr
 --version                Print version and exit
+--continue               Resume most recent session for this project
+--list-sessions          List all saved sessions for this project
 ```
 
 ### Environment variables
@@ -97,6 +99,27 @@ hew -p "write a fix based on the investigation" --load-messages /tmp/investigati
 ### Project-specific instructions
 
 Place an `AGENTS.md` file in your working directory. Its contents are appended to the system prompt, giving the LLM project-specific context.
+
+
+## Session persistence
+
+In conversational mode (no `-p` flag), sessions are automatically saved when you exit.
+
+Resume a session:
+
+```bash
+hew --continue   # Load most recent session
+hui --continue   # Load in TUI
+```
+
+List saved sessions for the current project:
+
+```bash
+hew --list-sessions
+hui --list-sessions
+```
+
+Sessions are stored in `$XDG_STATE_HOME/hew/projects/` (defaults to `~/.local/state/hew/projects/`), organized by a hash of the working directory. Sessions are tied to their original directory — you can only resume from the same project path.
 
 ## How it works
 
