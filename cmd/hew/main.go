@@ -36,6 +36,8 @@ Options:
   --load-messages string  Seed conversation from JSON file (e.g. from --trajectory)
   --event-log string      Write JSONL events to file (streams in real time)
   --trajectory string     Write message history as JSON on exit (single-task mode only)
+  --continue              Resume most recent session for this project
+  --list-sessions         List all saved sessions for this project
   --version               Print version and exit
 
 Environment:
@@ -59,6 +61,8 @@ Environment:
 	eventLog := flags.String("event-log", "", "")
 	trajectory := flags.String("trajectory", "", "")
 	loadMessages := flags.String("load-messages", "", "")
+	continueFlag := flags.Bool("continue", false, "")
+	listSessions := flags.Bool("list-sessions", false, "")
 
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		if err == flag.ErrHelp {
@@ -123,6 +127,23 @@ Environment:
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot get working directory: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *listSessions {
+		sessions, err := hew.ListSessions(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot list sessions: %v\n", err)
+			os.Exit(1)
+		}
+		if len(sessions) == 0 {
+			fmt.Println("No sessions found for this project.")
+			os.Exit(0)
+		}
+		fmt.Println("Saved sessions:")
+		for i, s := range sessions {
+			fmt.Printf("  %d. %s (%d messages) - %s\n", i+1, s.Filename, s.Messages, s.Created.Format("2006-01-02 15:04:05"))
+		}
+		os.Exit(0)
 	}
 
 	var eventLogFile *os.File
@@ -192,6 +213,27 @@ Environment:
 		}
 	}
 
+	if *continueFlag {
+		if taskPrompt != "" {
+			fmt.Fprintln(os.Stderr, "Error: --continue is only for conversational mode (no -p)")
+			os.Exit(1)
+		}
+		msgs, err := hew.LoadLatestSession(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot load session: %v\n", err)
+			os.Exit(1)
+		}
+		if msgs == nil {
+			fmt.Fprintf(os.Stderr, "Error: no session found for this project.\nRun 'hew --list-sessions' to see available sessions.\n")
+			os.Exit(1)
+		}
+		if err := agent.AddMessages(msgs); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot resume session: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "[Resumed session with %d messages]\n", len(msgs))
+	}
+
 	if *trajectory != "" && taskPrompt == "" {
 		fmt.Fprintln(os.Stderr, "Error: --trajectory requires -p (single-task mode)")
 		os.Exit(1)
@@ -244,6 +286,16 @@ Environment:
 		}
 		stop()
 	}
+	// Auto-save session on exit (conversational mode)
+	if msgs := agent.Messages(); len(msgs) > 0 {
+		if err := hew.SaveSession(cwd, msgs); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not save session: %v\n", err)
+		} else {
+			dir, _ := hew.SessionDir(cwd)
+			fmt.Fprintf(os.Stderr, "[Session saved to %s]\n", dir)
+		}
+	}
+
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
