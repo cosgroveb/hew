@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 (2026-03-14)
+
+- Add --rlm flag for recursive decomposition workflow
+- Update CHANGELOG.md for 0.5.0
+
 ## 0.5.0 (2026-03-11)
 
 - Add --disable-planning-workflow flag to hu, update both man pages
