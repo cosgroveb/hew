@@ -31,6 +31,7 @@ names, one per line.
 | 2 | RLM v1 (initial) | 0.24 | 0.78 | 0.37 | 40 (16 killed) | Children used while-loops, all backgrounded |
 | 3 | RLM v2 (+bulk ops) | 0.00 | 0.00 | 0.00 | 0 | Parent skipped RLM, did single bulk grep |
 | 4 | RLM v3 (scoped bulk ops) | 0.99 | 1.00 | 0.99 | 10 (0 killed) | All children succeeded |
+| 5 | No prompt at all (baseline) | 0.00 | 0.00 | 0.00 | 0 | Format error + while-read killed in 2 turns |
 
 ## Prompt Evolution
 
@@ -157,6 +158,28 @@ This suggests a general principle for recursive/hierarchical agent prompts:
 **any instruction that applies to a specific level must explicitly name that
 level**, or the model will apply it at whatever level is most efficient.
 
+### Run 5: No prompt at all (baseline)
+
+Ran with `-S` (skip built-in system prompt) and `--system-prompt-append` to
+inject only a resource warning:
+
+> "RESOURCE WARNING: Do not use while-read loops or per-item grep over more
+> than ~50 items. Use bulk operations (grep -Fwf, xargs, comm) instead.
+> Loops over large datasets will be killed."
+
+Without the base system prompt, the model didn't know the ```` ```bash ````
+output format convention. Its first response used `<tool_call>` XML blocks
+(the raw Anthropic tool-use format), which the parser rejected as a format
+error. On its second attempt it wrote a `while read` loop over all 1,420
+symbols — despite the resource warning — which was killed after 2 turns.
+
+**Result**: P=0.00, R=0.00, F1=0.00. Zero children dispatched, empty output.
+
+**Key insight**: The base system prompt provides essential scaffolding (output
+format, agent identity) without which the model can't even participate in the
+agent loop. RLM prompting builds on this foundation — it's not a standalone
+addition.
+
 ## Prompt text
 
 The full system prompt the model received in the winning run (RLM v3) is
@@ -172,6 +195,12 @@ Children receive the identical prompt (including the RLM section from
 `~/AGENTS.md`). They ignore the decomposition instructions since they're
 executing a focused subtask, not orchestrating. The prompts are verified
 identical — see [prompts/child-system-prompt.txt](prompts/child-system-prompt.txt).
+
+The baseline run (run 5) used `-S` to strip the built-in system prompt and
+`--system-prompt-append` for a minimal resource warning. The `-S` flag also
+suppresses `~/AGENTS.md` injection. The resulting prompt is just the resource
+warning — see
+[prompts/baseline-system-prompt.txt](prompts/baseline-system-prompt.txt).
 
 ## Reproduction
 

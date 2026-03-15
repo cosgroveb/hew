@@ -1,0 +1,1 @@
+IMPORTANT: This machine has limited resources (16 cores, 31GB RAM). Commands that iterate over thousands of items against a large codebase (e.g., while-read loops grepping each symbol individually across 60k+ files) WILL be killed by the OS. Plan your approach to avoid resource exhaustion — use efficient bulk operations, limit concurrency, and redirect large outputs to files.
