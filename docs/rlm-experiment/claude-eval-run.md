@@ -31,7 +31,7 @@ names, one per line.
 | 2 | RLM v1 (initial) | 0.24 | 0.78 | 0.37 | 40 (16 killed) | Children used while-loops, all backgrounded |
 | 3 | RLM v2 (+bulk ops) | 0.00 | 0.00 | 0.00 | 0 | Parent skipped RLM, did single bulk grep |
 | 4 | RLM v3 (scoped bulk ops) | 0.99 | 1.00 | 0.99 | 10 (0 killed) | All children succeeded |
-| 5 | No prompt at all (baseline) | 0.00 | 0.00 | 0.00 | 0 | Format error + while-read killed in 2 turns |
+| 5 | Base prompt only (no RLM) | 0.00 | 0.00 | 0.00 | 0 | 41 commands, wrong cwd, hallucinated answer |
 
 ## Prompt Evolution
 
@@ -144,6 +144,7 @@ The parent (run 4):
 | No RLM | No decomposition instructions at all | N/A — prompt didn't exist |
 | v1 | Children used per-item loops; mass backgrounding | "No loops" rule applied to parent but not children; no concurrency limit |
 | v2 | Parent skipped decomposition entirely | Bulk ops guidance lacked scope — parent consumed it as alternative strategy |
+| Baseline | Wrong cwd ignored; single-pass algorithm; hallucinated answer | No decomposition framework; no "assess scope first" step to catch errors early |
 
 ### The "scope leak" anti-pattern
 
@@ -158,27 +159,42 @@ This suggests a general principle for recursive/hierarchical agent prompts:
 **any instruction that applies to a specific level must explicitly name that
 level**, or the model will apply it at whatever level is most efficient.
 
-### Run 5: No prompt at all (baseline)
+### Run 5: Base prompt only (no RLM, baseline)
 
-Ran with `-S` (skip built-in system prompt) and `--system-prompt-append` to
-inject only a resource warning:
+Same base prompt as run 4 (agent identity, format rules, file-ops, debugging,
+finishing) plus the debugging framework from `~/AGENTS.md`, but with the
+entire RLM task decomposition section stripped out. A resource warning was
+appended via `--system-prompt-append` to avoid the uninteresting failure mode
+of while-read loops being killed by resource limits.
 
-> "RESOURCE WARNING: Do not use while-read loops or per-item grep over more
-> than ~50 items. Use bulk operations (grep -Fwf, xargs, comm) instead.
-> Loops over large datasets will be killed."
+The model attempted a reasonable single-agent strategy: extract all exports,
+then use `git grep -owF -f` to find which symbols appear outside
+`drivers/gpu/drm/`, then `comm -23` to identify the difference. However, it
+failed on execution:
 
-Without the base system prompt, the model didn't know the ```` ```bash ````
-output format convention. Its first response used `<tool_call>` XML blocks
-(the raw Anthropic tool-use format), which the parser rejected as a format
-error. On its second attempt it wrote a `while read` loop over all 1,420
-symbols — despite the resource warning — which was killed after 2 turns.
+1. **Wrong working directory**: Used `/home/user/linux` (a default/assumed
+   path) instead of `/tmp/linux` throughout all 41 commands. Most `cd`
+   commands failed silently or weren't used, so `git grep` ran from the
+   wrong directory and returned empty results.
 
-**Result**: P=0.00, R=0.00, F1=0.00. Zero children dispatched, empty output.
+2. **No error recovery**: Despite seeing `cd: /home/user/linux: No such file
+   or directory` in output repeatedly, the model continued using the same
+   wrong path for all 41 commands. The base prompt says "Read error output
+   carefully" but the model ignored these errors.
 
-**Key insight**: The base system prompt provides essential scaffolding (output
-format, agent identity) without which the model can't even participate in the
-agent loop. RLM prompting builds on this foundation — it's not a standalone
-addition.
+3. **Hallucinated final answer**: With 0 actual results computed (all grep
+   outputs were empty), the model declared `<done/>` and listed 71 symbol
+   names that it fabricated — none matching ground truth.
+
+**Result**: P=0.00, R=0.00, F1=0.00 (0 TP, 21 FP extracted, 94 FN).
+
+**Key insight**: Without RLM decomposition instructions, the model attempted
+a valid bulk-grep strategy but couldn't self-correct when basic execution
+failed. The RLM prompt's "assess scope" step (run a fast command to measure
+the problem) would have caught the wrong-directory issue immediately. More
+importantly, the model had no framework for breaking the problem into
+manageable pieces — its single-pass approach, even if the path had been
+correct, would have produced wrong results (same algorithm failure as run 3).
 
 ## Prompt text
 
@@ -196,10 +212,10 @@ Children receive the identical prompt (including the RLM section from
 executing a focused subtask, not orchestrating. The prompts are verified
 identical — see [prompts/child-system-prompt.txt](prompts/child-system-prompt.txt).
 
-The baseline run (run 5) used `-S` to strip the built-in system prompt and
-`--system-prompt-append` for a minimal resource warning. The `-S` flag also
-suppresses `~/AGENTS.md` injection. The resulting prompt is just the resource
-warning — see
+The baseline run (run 5) used the same base prompt and debugging framework
+but with the RLM task decomposition section removed from `~/AGENTS.md`. A
+resource warning was appended via `--system-prompt-append`. The resulting
+prompt is in
 [prompts/baseline-system-prompt.txt](prompts/baseline-system-prompt.txt).
 
 ## Reproduction
