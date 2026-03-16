@@ -1,0 +1,1 @@
+Error: query model: api error (status 400): max_tokens must be at least 1, got -806013. (parameter=max_tokens, value=-806013)

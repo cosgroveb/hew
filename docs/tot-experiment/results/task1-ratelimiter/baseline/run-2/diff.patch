@@ -1,0 +1,123 @@
+diff -ru '--exclude=.git' '--exclude=go.sum' /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task1-ratelimiter/impl.go /tmp/tot-eval-task1-ratelimiter-MyqAHx/impl.go
+--- /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task1-ratelimiter/impl.go	2026-03-16 03:08:52.694698377 +0000
++++ /tmp/tot-eval-task1-ratelimiter-MyqAHx/impl.go	2026-03-16 03:31:16.444403109 +0000
+@@ -1,7 +1,117 @@
+ package ratelimiter
+ 
++import (
++	"sync"
++	"time"
++)
++
+ // newLimiter returns a Limiter implementation.
+-// TODO: Implement a rate limiting algorithm.
+ func newLimiter(cfg Config, clock Clock) Limiter {
+-	return nil
++	// Normalise burst: if zero use rate as burst.
++	burst := cfg.Burst
++	if burst <= 0 {
++		burst = cfg.Rate
++	}
++
++	// Defensive defaults: non‑positive rate or window makes limiter a no‑op.
++	if cfg.Rate <= 0 || cfg.Window <= 0 {
++		return &noOpLimiter{}
++	}
++
++	// Use the provided clock, or fall back to real time.
++	var c Clock = clock
++	if c == nil {
++		c = realClock{}
++	}
++
++	return &bucketLimiter{
++		cfg: Config{
++			Rate:   cfg.Rate,
++			Window: cfg.Window,
++			Burst:  burst,
++		},
++		clk:   c,
++		state: make(map[string]*bucketState),
++		mu:    &sync.RWMutex{},
++	}
++}
++
++// noOpLimiter always allows requests.
++type noOpLimiter struct{}
++
++func (n *noOpLimiter) Allow(_ string) bool { return true }
++func (n *noOpLimiter) Reset(_ string)       {}
++
++// realClock implements Clock using time.Now().
++type realClock struct{}
++
++func (realClock) Now() time.Time { return time.Now() }
++
++// bucketLimiter implements Limiter using a token‑bucket algorithm.
++type bucketLimiter struct {
++	cfg   Config
++	clk   Clock
++	mu    *sync.RWMutex               // protects the map
++	state map[string]*bucketState // per‑key state
++}
++
++// bucketState holds token bucket data for a single key.
++type bucketState struct {
++	mu       sync.Mutex // protects fields below
++	lastSeen time.Time  // last refill time
++	tokens   int        // current token count
++}
++
++// Allow checks if a request for the given key can proceed.
++func (l *bucketLimiter) Allow(key string) bool {
++	// Obtain or create bucket state for the key.
++	l.mu.RLock()
++	b, ok := l.state[key]
++	l.mu.RUnlock()
++
++	if !ok {
++		// Need to create a new bucket entry.
++		l.mu.Lock()
++		if b, ok = l.state[key]; !ok {
++			b = &bucketState{
++				lastSeen: l.clk.Now(),
++				tokens:   l.cfg.Burst, // start full
++			}
++			l.state[key] = b
++		}
++		l.mu.Unlock()
++	}
++
++	b.mu.Lock()
++	defer b.mu.Unlock()
++
++	now := l.clk.Now()
++	if now.After(b.lastSeen) {
++		elapsed := now.Sub(b.lastSeen)
++		if elapsed >= l.cfg.Window {
++			whole := int(elapsed / l.cfg.Window)
++			add := whole * l.cfg.Rate
++			if add > 0 {
++				b.tokens += add
++				if b.tokens > l.cfg.Burst {
++					b.tokens = l.cfg.Burst
++				}
++				// advance lastSeen by whole windows
++				b.lastSeen = b.lastSeen.Add(time.Duration(whole) * l.cfg.Window)
++			}
++		}
++	}
++
++	if b.tokens <= 0 {
++		return false
++	}
++	b.tokens--
++	return true
++}
++
++// Reset clears the rate‑limiting state for a specific key.
++func (l *bucketLimiter) Reset(key string) {
++	l.mu.Lock()
++	delete(l.state, key)
++	l.mu.Unlock()
+ }

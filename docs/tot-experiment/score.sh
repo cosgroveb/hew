@@ -16,11 +16,11 @@ TRAJECTORY="${3:-}"
 
 cd "$WORK_DIR"
 
-# --- Tests ---
-test_output=$(go test ./... -v -count=1 -race 2>&1) || true
-tests_total=$(echo "$test_output" | grep -cE '--- (PASS|FAIL):' || echo 0)
-tests_passed=$(echo "$test_output" | grep -c '--- PASS:' || echo 0)
-tests_failed=$(echo "$test_output" | grep -c '--- FAIL:' || echo 0)
+# --- Tests (bypass RTK to get raw output) ---
+test_output=$(command go test ./... -v -count=1 -race 2>&1) || true
+tests_total=$(echo "$test_output" | grep -cE '^--- (PASS|FAIL):' || echo 0)
+tests_passed=$(echo "$test_output" | grep -c '^--- PASS:' || echo 0)
+tests_failed=$(echo "$test_output" | grep -c '^--- FAIL:' || echo 0)
 
 # Race detector
 if echo "$test_output" | grep -q 'DATA RACE'; then
@@ -29,8 +29,8 @@ else
     race_clean=true
 fi
 
-# --- Vet ---
-if go vet ./... 2>&1 | grep -q .; then
+# --- Vet (bypass RTK) ---
+if command go vet ./... 2>&1 | grep -q .; then
     vet_clean=false
 else
     vet_clean=true

@@ -1,0 +1,100 @@
+diff -ru '--exclude=.git' '--exclude=go.sum' /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task1-ratelimiter/impl.go /tmp/tot-eval-task1-ratelimiter-OUU7j3/impl.go
+--- /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task1-ratelimiter/impl.go	2026-03-16 03:08:52.694698377 +0000
++++ /tmp/tot-eval-task1-ratelimiter-OUU7j3/impl.go	2026-03-16 03:32:37.900261914 +0000
+@@ -1,7 +1,93 @@
+ package ratelimiter
+ 
+-// newLimiter returns a Limiter implementation.
+-// TODO: Implement a rate limiting algorithm.
++import (
++	"sync"
++	"time"
++)
++
++// bucket holds the token state for a single key.
++type bucket struct {
++	tokens float64   // current tokens (may be fractional during refill)
++	last   time.Time // last refill timestamp
++}
++
++// limiter implements the Limiter interface using a token bucket algorithm.
++type limiter struct {
++	cfg    Config
++	clock  Clock
++	burst  int
++	rate   float64           // tokens per second
++	mu     sync.Mutex        // protects buckets
++	buckets map[string]*bucket
++}
++
++// Ensure limiter implements Limiter.
++var _ Limiter = (*limiter)(nil)
++
++// now returns the current time using the injected Clock if present.
++func (l *limiter) now() time.Time {
++	if l.clock != nil {
++		return l.clock.Now()
++	}
++	return time.Now()
++}
++
++// Allow checks if a request for the given key may proceed.
++// It refills tokens based on elapsed time, caps at the burst size,
++// and consumes one token if available.
++func (l *limiter) Allow(key string) bool {
++	now := l.now()
++
++	l.mu.Lock()
++	b, ok := l.buckets[key]
++	if !ok {
++		// Initialise a fresh bucket with a full burst.
++		b = &bucket{
++			tokens: float64(l.burst),
++			last:   now,
++		}
++		l.buckets[key] = b
++	}
++	// Refill tokens according to time passed.
++	elapsed := now.Sub(b.last).Seconds()
++	if elapsed > 0 {
++		b.tokens += elapsed * l.rate
++		if b.tokens > float64(l.burst) {
++			b.tokens = float64(l.burst)
++		}
++		b.last = now
++	}
++	if b.tokens >= 1 {
++		b.tokens -= 1
++		l.mu.Unlock()
++		return true
++	}
++	l.mu.Unlock()
++	return false
++}
++
++// Reset clears the limiter state for the provided key.
++func (l *limiter) Reset(key string) {
++	l.mu.Lock()
++	delete(l.buckets, key)
++	l.mu.Unlock()
++}
++
++// newLimiter creates a concrete limiter instance based on cfg and clock.
+ func newLimiter(cfg Config, clock Clock) Limiter {
+-	return nil
++	// Burst defaults to Rate when zero.
++	burst := cfg.Burst
++	if burst == 0 {
++		burst = cfg.Rate
++	}
++	// Compute token refill rate: tokens per second.
++	ratePerSec := float64(cfg.Rate) / cfg.Window.Seconds()
++
++	return &limiter{
++		cfg:     cfg,
++		clock:   clock,
++		burst:   burst,
++		rate:    ratePerSec,
++		buckets: make(map[string]*bucket),
++	}
+ }

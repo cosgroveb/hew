@@ -1,0 +1,98 @@
+diff -ru '--exclude=.git' '--exclude=go.sum' /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task1-ratelimiter/impl.go /tmp/tot-eval-task1-ratelimiter-oARk3q/impl.go
+--- /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task1-ratelimiter/impl.go	2026-03-16 03:08:52.694698377 +0000
++++ /tmp/tot-eval-task1-ratelimiter-oARk3q/impl.go	2026-03-16 03:29:16.919628287 +0000
+@@ -1,7 +1,91 @@
+ package ratelimiter
+ 
+-// newLimiter returns a Limiter implementation.
+-// TODO: Implement a rate limiting algorithm.
++import (
++	"sync"
++	"time"
++)
++
++// realClock implements Clock using the actual system clock.
++type realClock struct{}
++
++func (rc *realClock) Now() time.Time { return time.Now() }
++
++// limiter implements Limiter using a token‑bucket per key.
++type limiter struct {
++	mu      sync.Mutex
++	clock   Clock
++	rate    float64 // tokens added per second
++	burst   int
++	buckets map[string]*bucket
++}
++
++// bucket holds per‑key token state.
++type bucket struct {
++	last   time.Time
++	tokens float64
++}
++
++// newLimiter creates a Limiter based on the supplied configuration.
++// It never returns nil; it panics if Config.Rate <= 0.
+ func newLimiter(cfg Config, clock Clock) Limiter {
+-	return nil
++	if cfg.Rate <= 0 {
++		panic("Rate must be > 0")
++	}
++	// Determine burst size: if 0, default to Rate.
++	burst := cfg.Burst
++	if burst <= 0 {
++		burst = cfg.Rate
++	}
++	if burst < 1 {
++		burst = 1
++	}
++	// Tokens added per second.
++	ratePerSec := float64(cfg.Rate) / cfg.Window.Seconds()
++	if clock == nil {
++		clock = &realClock{}
++	}
++	return &limiter{
++		clock:   clock,
++		rate:    ratePerSec,
++		burst:   burst,
++		buckets: make(map[string]*bucket),
++	}
++}
++
++// Allow checks whether a request for the given key is permitted.
++func (l *limiter) Allow(key string) bool {
++	now := l.clock.Now()
++
++	l.mu.Lock()
++	b, ok := l.buckets[key]
++	if !ok {
++		// First request: start with a full bucket.
++		b = &bucket{
++			last:   now,
++			tokens: float64(l.burst),
++		}
++		l.buckets[key] = b
++	}
++	// Refill based on elapsed time.
++	elapsed := now.Sub(b.last).Seconds()
++	if elapsed > 0 {
++		b.tokens += elapsed * l.rate
++		if b.tokens > float64(l.burst) {
++			b.tokens = float64(l.burst)
++		}
++		b.last = now
++	}
++	allowed := b.tokens >= 1.0
++	if allowed {
++		b.tokens -= 1.0
++	}
++	l.mu.Unlock()
++	return allowed
++}
++
++// Reset clears the rate‑limiting state for the given key.
++func (l *limiter) Reset(key string) {
++	l.mu.Lock()
++	delete(l.buckets, key)
++	l.mu.Unlock()
+ }

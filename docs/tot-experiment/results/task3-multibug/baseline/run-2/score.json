@@ -1,0 +1,12 @@
+{
+  "tests_total": 8,
+  "tests_passed": 5,
+  "tests_failed": 3,
+  "race_clean": false,
+  "vet_clean": true,
+  "max_file_lines": 218,
+  "package_count": 1,
+  "diff_lines": 0
+0,
+  "steps": 3
+}

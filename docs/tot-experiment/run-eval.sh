@@ -16,7 +16,14 @@ set -euo pipefail
 MODE="${1:?Usage: run-eval.sh <mode> <fixture-dir> <run-id>}"
 FIXTURE_DIR="${2:?Usage: run-eval.sh <mode> <fixture-dir> <run-id>}"
 RUN_ID="${3:?Usage: run-eval.sh <mode> <fixture-dir> <run-id>}"
-APPROACHES="${5:-}"
+shift 3
+APPROACHES=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --approaches) APPROACHES="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
 
 FIXTURE_NAME=$(basename "$FIXTURE_DIR")
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

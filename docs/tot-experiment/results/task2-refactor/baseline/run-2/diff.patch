@@ -1,0 +1,427 @@
+Only in /tmp/tot-eval-task2-refactor-dBgnvk: notification
+Only in /tmp/tot-eval-task2-refactor-dBgnvk/service: order.go
+Only in /tmp/tot-eval-task2-refactor-dBgnvk/service: perm.go
+diff -ru '--exclude=.git' '--exclude=go.sum' /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task2-refactor/service/service.go /tmp/tot-eval-task2-refactor-dBgnvk/service/service.go
+--- /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task2-refactor/service/service.go	2026-03-16 03:09:54.641032234 +0000
++++ /tmp/tot-eval-task2-refactor-dBgnvk/service/service.go	2026-03-16 03:43:12.918420351 +0000
+@@ -1,32 +1,33 @@
+ package service
+ 
+ import (
+-	"errors"
+-	"fmt"
+-	"strings"
+ 	"sync"
+-	"time"
+ 
+ 	"refactor/types"
++	"refactor/validation"
++	"refactor/notification"
+ )
+ 
+-// UserOrderService handles user management, order processing, notifications,
+-// and validation. It is the single entry point for all business operations.
++// UserOrderService is the façade for all business operations.
+ type UserOrderService struct {
+ 	mu            sync.RWMutex
+ 	users         map[string]*types.User
+ 	orders        map[string]*types.Order
+ 	notifications []types.Notification
++
+ 	userCounter   int
+ 	orderCounter  int
+ 	emailDomain   string
+ 	maxItems      int
+ 	adminRoles    []string
++
++	validator validation.Validator
++	notifier  notification.Notifier
+ }
+ 
+-// NewUserOrderService creates a new service instance with default configuration.
++// NewUserOrderService creates a service with default validator and notifier.
+ func NewUserOrderService() *UserOrderService {
+-	return &UserOrderService{
++	s := &UserOrderService{
+ 		users:         make(map[string]*types.User),
+ 		orders:        make(map[string]*types.Order),
+ 		notifications: make([]types.Notification, 0),
+@@ -34,372 +35,8 @@
+ 		maxItems:      100,
+ 		adminRoles:    []string{"admin", "superadmin"},
+ 	}
+-}
+-
+-// CreateUser creates a new user, validates their email, and sends a welcome
+-// notification. Returns the created user or an error if validation fails.
+-func (s *UserOrderService) CreateUser(email, name, role string) (*types.User, error) {
+-	s.mu.Lock()
+-	defer s.mu.Unlock()
+-
+-	// Inline email validation — coupled to internal state
+-	if email == "" {
+-		return nil, errors.New("email is required")
+-	}
+-	if !strings.Contains(email, "@") {
+-		return nil, errors.New("email must contain @")
+-	}
+-	parts := strings.Split(email, "@")
+-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+-		return nil, errors.New("email format is invalid")
+-	}
+-	if !strings.Contains(parts[1], ".") {
+-		return nil, errors.New("email domain must contain a dot")
+-	}
+-	if s.emailDomain != "" && parts[1] != s.emailDomain {
+-		return nil, fmt.Errorf("email must be from domain %s", s.emailDomain)
+-	}
+-
+-	// Check for duplicate email
+-	for _, u := range s.users {
+-		if u.Email == email {
+-			return nil, errors.New("email already registered")
+-		}
+-	}
+-
+-	if role == "" {
+-		role = "user"
+-	}
+-
+-	s.userCounter++
+-	user := &types.User{
+-		ID:       fmt.Sprintf("user-%d", s.userCounter),
+-		Email:    email,
+-		Name:     name,
+-		Role:     role,
+-		Verified: false,
+-	}
+-	s.users[user.ID] = user
+-
+-	// Directly send welcome email — tightly coupled notification logic
+-	subject := fmt.Sprintf("Welcome to our platform, %s!", name)
+-	body := fmt.Sprintf("Hi %s,\n\nYour account has been created with email %s.\nPlease verify your email to get started.\n\nBest regards,\nThe Team", name, email)
+-	notification := types.Notification{
+-		To:      email,
+-		Subject: subject,
+-		Body:    body,
+-	}
+-	s.notifications = append(s.notifications, notification)
+-
+-	return user, nil
+-}
+-
+-// GetUser retrieves a user by ID.
+-func (s *UserOrderService) GetUser(id string) (*types.User, error) {
+-	s.mu.RLock()
+-	defer s.mu.RUnlock()
+-
+-	user, ok := s.users[id]
+-	if !ok {
+-		return nil, fmt.Errorf("user %s not found", id)
+-	}
+-	return user, nil
+-}
+-
+-// UpdateUser updates a user's name and role.
+-func (s *UserOrderService) UpdateUser(id, name, role string) (*types.User, error) {
+-	s.mu.Lock()
+-	defer s.mu.Unlock()
+-
+-	user, ok := s.users[id]
+-	if !ok {
+-		return nil, fmt.Errorf("user %s not found", id)
+-	}
+-	if name != "" {
+-		user.Name = name
+-	}
+-	if role != "" {
+-		user.Role = role
+-	}
+-	return user, nil
+-}
+-
+-// DeleteUser removes a user. Returns an error if the user has active orders.
+-func (s *UserOrderService) DeleteUser(id string) error {
+-	s.mu.Lock()
+-	defer s.mu.Unlock()
+-
+-	_, ok := s.users[id]
+-	if !ok {
+-		return fmt.Errorf("user %s not found", id)
+-	}
+-
+-	// Check for active orders — reaching into orders map directly
+-	for _, order := range s.orders {
+-		if order.UserID == id && order.Status == "active" {
+-			return fmt.Errorf("cannot delete user %s: has active orders", id)
+-		}
+-	}
+-
+-	delete(s.users, id)
+-	return nil
+-}
+-
+-// VerifyEmail marks a user's email as verified.
+-func (s *UserOrderService) VerifyEmail(userID string) error {
+-	s.mu.Lock()
+-	defer s.mu.Unlock()
+-
+-	user, ok := s.users[userID]
+-	if !ok {
+-		return fmt.Errorf("user %s not found", userID)
+-	}
+-	user.Verified = true
+-	return nil
+-}
+-
+-// CreateOrder creates a new order for a user. Validates the user exists,
+-// validates order items, calculates the total, and sends a confirmation
+-// notification — all in one method.
+-func (s *UserOrderService) CreateOrder(userID string, items []types.OrderItem) (*types.Order, error) {
+-	s.mu.Lock()
+-	defer s.mu.Unlock()
+-
+-	// Validate user exists — reaching into users map
+-	user, ok := s.users[userID]
+-	if !ok {
+-		return nil, fmt.Errorf("user %s not found", userID)
+-	}
+-
+-	// Inline order validation
+-	if len(items) == 0 {
+-		return nil, errors.New("order must have at least one item")
+-	}
+-	if len(items) > s.maxItems {
+-		return nil, fmt.Errorf("order cannot exceed %d items", s.maxItems)
+-	}
+-	for i, item := range items {
+-		if item.ProductID == "" {
+-			return nil, fmt.Errorf("item %d: product ID is required", i)
+-		}
+-		if item.Price < 0 {
+-			return nil, fmt.Errorf("item %d: price cannot be negative", i)
+-		}
+-		if item.Quantity <= 0 {
+-			return nil, fmt.Errorf("item %d: quantity must be positive", i)
+-		}
+-	}
+-
+-	// Calculate total inline
+-	var total float64
+-	for _, item := range items {
+-		total += item.Price * float64(item.Quantity)
+-	}
+-
+-	s.orderCounter++
+-	order := &types.Order{
+-		ID:        fmt.Sprintf("order-%d", s.orderCounter),
+-		UserID:    userID,
+-		Items:     items,
+-		Status:    "active",
+-		Total:     total,
+-		CreatedAt: time.Now().Format(time.RFC3339),
+-	}
+-	s.orders[order.ID] = order
+-
+-	// Directly send order confirmation — tightly coupled
+-	itemLines := ""
+-	for _, item := range items {
+-		itemLines += fmt.Sprintf("  - %s (x%d): $%.2f\n", item.Name, item.Quantity, item.Price*float64(item.Quantity))
+-	}
+-	subject := fmt.Sprintf("Order %s confirmed", order.ID)
+-	body := fmt.Sprintf("Hi %s,\n\nYour order %s has been confirmed.\n\nItems:\n%s\nTotal: $%.2f\n\nThank you for your purchase!", user.Name, order.ID, itemLines, total)
+-	notification := types.Notification{
+-		To:      user.Email,
+-		Subject: subject,
+-		Body:    body,
+-	}
+-	s.notifications = append(s.notifications, notification)
+-
+-	return order, nil
+-}
+-
+-// GetOrder retrieves an order by ID.
+-func (s *UserOrderService) GetOrder(id string) (*types.Order, error) {
+-	s.mu.RLock()
+-	defer s.mu.RUnlock()
+-
+-	order, ok := s.orders[id]
+-	if !ok {
+-		return nil, fmt.Errorf("order %s not found", id)
+-	}
+-	return order, nil
+-}
+-
+-// ListOrdersByUser returns all orders belonging to a specific user.
+-func (s *UserOrderService) ListOrdersByUser(userID string) ([]*types.Order, error) {
+-	s.mu.RLock()
+-	defer s.mu.RUnlock()
+-
+-	_, ok := s.users[userID]
+-	if !ok {
+-		return nil, fmt.Errorf("user %s not found", userID)
+-	}
+-
+-	var result []*types.Order
+-	for _, order := range s.orders {
+-		if order.UserID == userID {
+-			result = append(result, order)
+-		}
+-	}
+-	return result, nil
+-}
+-
+-// CancelOrder cancels an order. Only the order owner or an admin can cancel.
+-// Sends a cancellation notification.
+-func (s *UserOrderService) CancelOrder(orderID, cancelledByUserID string) error {
+-	s.mu.Lock()
+-	defer s.mu.Unlock()
+-
+-	order, ok := s.orders[orderID]
+-	if !ok {
+-		return fmt.Errorf("order %s not found", orderID)
+-	}
+-
+-	if order.Status == "cancelled" {
+-		return errors.New("order is already cancelled")
+-	}
+-
+-	// Inline permission check — coupled to user store and admin roles
+-	cancellingUser, ok := s.users[cancelledByUserID]
+-	if !ok {
+-		return fmt.Errorf("user %s not found", cancelledByUserID)
+-	}
+-
+-	isAdmin := false
+-	for _, role := range s.adminRoles {
+-		if cancellingUser.Role == role {
+-			isAdmin = true
+-			break
+-		}
+-	}
+-
+-	if !isAdmin && order.UserID != cancelledByUserID {
+-		return errors.New("permission denied: only order owner or admin can cancel")
+-	}
+-
+-	order.Status = "cancelled"
+-
+-	// Look up the order owner to send notification — more coupling
+-	orderOwner, ownerExists := s.users[order.UserID]
+-	if ownerExists {
+-		subject := fmt.Sprintf("Order %s cancelled", orderID)
+-		body := fmt.Sprintf("Hi %s,\n\nYour order %s has been cancelled.\n\nIf you did not request this, please contact support.\n\nBest regards,\nThe Team", orderOwner.Name, orderID)
+-		notification := types.Notification{
+-			To:      orderOwner.Email,
+-			Subject: subject,
+-			Body:    body,
+-		}
+-		s.notifications = append(s.notifications, notification)
+-	}
+-
+-	return nil
+-}
+-
+-// CalculateTotal computes the total for a list of order items.
+-func (s *UserOrderService) CalculateTotal(items []types.OrderItem) float64 {
+-	var total float64
+-	for _, item := range items {
+-		total += item.Price * float64(item.Quantity)
+-	}
+-	return total
+-}
+-
+-// GetNotifications returns all notifications that have been sent.
+-func (s *UserOrderService) GetNotifications() []types.Notification {
+-	s.mu.RLock()
+-	defer s.mu.RUnlock()
+-
+-	result := make([]types.Notification, len(s.notifications))
+-	copy(result, s.notifications)
+-	return result
+-}
+-
+-// ValidateEmail checks whether an email address is valid. Exported for external use.
+-func (s *UserOrderService) ValidateEmail(email string) error {
+-	if email == "" {
+-		return errors.New("email is required")
+-	}
+-	if !strings.Contains(email, "@") {
+-		return errors.New("email must contain @")
+-	}
+-	parts := strings.Split(email, "@")
+-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+-		return errors.New("email format is invalid")
+-	}
+-	if !strings.Contains(parts[1], ".") {
+-		return errors.New("email domain must contain a dot")
+-	}
+-	if s.emailDomain != "" && parts[1] != s.emailDomain {
+-		return fmt.Errorf("email must be from domain %s", s.emailDomain)
+-	}
+-	return nil
+-}
+-
+-// ValidateOrder checks whether an order's items are valid. Exported for external use.
+-func (s *UserOrderService) ValidateOrder(items []types.OrderItem) error {
+-	if len(items) == 0 {
+-		return errors.New("order must have at least one item")
+-	}
+-	if len(items) > s.maxItems {
+-		return fmt.Errorf("order cannot exceed %d items", s.maxItems)
+-	}
+-	for i, item := range items {
+-		if item.ProductID == "" {
+-			return fmt.Errorf("item %d: product ID is required", i)
+-		}
+-		if item.Price < 0 {
+-			return fmt.Errorf("item %d: price cannot be negative", i)
+-		}
+-		if item.Quantity <= 0 {
+-			return fmt.Errorf("item %d: quantity must be positive", i)
+-		}
+-	}
+-	return nil
+-}
+-
+-// CheckUserPermission verifies whether a user has a given permission level.
+-// "admin" permission requires an admin role. "owner" permission requires matching userID.
+-func (s *UserOrderService) CheckUserPermission(userID, targetUserID, permission string) (bool, error) {
+-	s.mu.RLock()
+-	defer s.mu.RUnlock()
+-
+-	user, ok := s.users[userID]
+-	if !ok {
+-		return false, fmt.Errorf("user %s not found", userID)
+-	}
+-
+-	switch permission {
+-	case "admin":
+-		for _, role := range s.adminRoles {
+-			if user.Role == role {
+-				return true, nil
+-			}
+-		}
+-		return false, nil
+-	case "owner":
+-		return userID == targetUserID, nil
+-	case "admin_or_owner":
+-		if userID == targetUserID {
+-			return true, nil
+-		}
+-		for _, role := range s.adminRoles {
+-			if user.Role == role {
+-				return true, nil
+-			}
+-		}
+-		return false, nil
+-	default:
+-		return false, fmt.Errorf("unknown permission type: %s", permission)
+-	}
++	// inject default implementations
++	s.validator = &validation.DefaultValidator{EmailDomain: s.emailDomain, MaxItems: s.maxItems}
++	s.notifier = &notification.SimpleNotifier{}
++	return s
+ }
+Only in /tmp/tot-eval-task2-refactor-dBgnvk/service: user.go
+Only in /tmp/tot-eval-task2-refactor-dBgnvk: validation

@@ -1,0 +1,142 @@
+diff -ru '--exclude=.git' '--exclude=go.sum' /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task3-multibug/cache.go /tmp/tot-eval-task3-multibug-odl7fy/cache.go
+--- /home/bcosgrove/code/hew/docs/tot-experiment/fixtures/task3-multibug/cache.go	2026-03-16 03:09:57.018008092 +0000
++++ /tmp/tot-eval-task3-multibug-odl7fy/cache.go	2026-03-16 03:51:33.936166697 +0000
+@@ -41,9 +41,7 @@
+ 		maxSize: maxSize,
+ 		stopCh:  make(chan struct{}),
+ 	}
+-
+ 	go c.evictionLoop(evictionInterval)
+-
+ 	return c
+ }
+ 
+@@ -77,21 +75,18 @@
+ 	c.mu.Lock()
+ 	c.stats.Hits++
+ 	c.mu.Unlock()
+-
+ 	return e.value, true
+ }
+ 
+ // Set adds or updates a cache entry with the given TTL.
+-//
+-// BUG: The expiration time is calculated incorrectly.
+ func (c *Cache) Set(key string, value interface{}, ttl time.Duration) {
+ 	c.mu.Lock()
+ 	defer c.mu.Unlock()
+ 
+-	// If key already exists, update it in place (order stays the same).
+ 	if existing, ok := c.items[key]; ok {
++		// Update existing entry without changing its position in LRU order.
+ 		existing.value = value
+-		existing.expiresAt = time.Now().Add(-ttl) // BUG: should be Add(ttl)
++		existing.expiresAt = time.Now().Add(ttl)
+ 		return
+ 	}
+ 
+@@ -100,11 +95,12 @@
+ 		c.evictOldest()
+ 	}
+ 
++	now := time.Now()
+ 	c.items[key] = &entry{
+ 		key:       key,
+ 		value:     value,
+-		expiresAt: time.Now().Add(-ttl), // BUG: should be Add(ttl)
+-		createdAt: time.Now(),
++		expiresAt: now.Add(ttl),
++		createdAt: now,
+ 	}
+ 	c.order = append(c.order, key)
+ }
+@@ -117,7 +113,6 @@
+ 	if _, ok := c.items[key]; !ok {
+ 		return false
+ 	}
+-
+ 	delete(c.items, key)
+ 	c.order = removeFromOrder(c.order, key)
+ 	return true
+@@ -137,8 +132,7 @@
+ 	return len(c.items)
+ }
+ 
+-// Stop halts the background eviction goroutine. The cache is still usable
+-// after stopping, but expired entries will only be cleaned up on access.
++// Stop halts the background eviction goroutine.
+ func (c *Cache) Stop() {
+ 	c.stopOnce.Do(func() {
+ 		close(c.stopCh)
+@@ -149,7 +143,6 @@
+ func (c *Cache) evictionLoop(interval time.Duration) {
+ 	ticker := time.NewTicker(interval)
+ 	defer ticker.Stop()
+-
+ 	for {
+ 		select {
+ 		case <-ticker.C:
+@@ -161,53 +154,33 @@
+ }
+ 
+ // evictExpired removes all entries whose TTL has passed.
+-//
+-// BUG: Iterates over the map without holding any lock, causing a data race
+-// with concurrent Get/Set/Delete operations.
++// It holds the write lock for the whole iteration to avoid data races.
+ func (c *Cache) evictExpired() {
+ 	now := time.Now()
+-	for key, e := range c.items { // BUG: no lock held during iteration
++	c.mu.Lock()
++	for key, e := range c.items {
+ 		if now.After(e.expiresAt) {
+-			c.mu.Lock()
+ 			delete(c.items, key)
+ 			c.order = removeFromOrder(c.order, key)
+ 			c.stats.Evictions++
+-			c.mu.Unlock()
+ 		}
+ 	}
++	c.mu.Unlock()
+ }
+ 
+-// evictOldest removes the least-recently-inserted entry from the cache.
+-// Caller must hold c.mu.
+-//
+-// BUG: The background evictor may concurrently modify the map and order slice
+-// between finding the oldest key and deleting it, leading to inconsistent
+-// state or a panic.
++// evictOldest removes the least-recently-inserted entry.
++// Since `order` maintains insertion order, the first element is the oldest.
+ func (c *Cache) evictOldest() {
+-	if len(c.items) == 0 {
++	if len(c.order) == 0 {
+ 		return
+ 	}
+-
+-	var oldestKey string
+-	var oldestTime time.Time
+-
+-	for k, e := range c.items {
+-		if oldestTime.IsZero() || e.createdAt.Before(oldestTime) {
+-			oldestKey = k
+-			oldestTime = e.createdAt
+-		}
+-	}
+-
+-	// The background evictor (evictExpired) may have already removed oldestKey
+-	// from c.items between the loop above and here — but since evictExpired
+-	// does NOT hold the lock during its iteration, it can also be modifying
+-	// c.order concurrently, causing a panic on the slice operation below.
++	oldestKey := c.order[0]
+ 	delete(c.items, oldestKey)
++	c.order = c.order[1:]
+ 	c.stats.Evictions++
+-	c.order = removeFromOrder(c.order, oldestKey)
+ }
+ 
+-// removeFromOrder removes the first occurrence of key from the order slice.
++// removeFromOrder removes a key from the order slice, preserving order.
+ func removeFromOrder(order []string, key string) []string {
+ 	for i, k := range order {
+ 		if k == key {
