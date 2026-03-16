@@ -1,83 +1,49 @@
-# RLM (Recursive Language Model) Experiment with Hew
+# RLM (Recursive Language Model) Experiment with Hew — Final Results
 
-## What RLM Is
+## Conclusion
 
-RLM (arXiv:2512.24601, Zhang/Kraska/Khattab, Dec 2025) is an inference paradigm where the LLM programmatically examines, decomposes, and recursively calls itself over its input rather than stuffing everything into one context window.
+RLM task decomposition via child process spawning works with Claude Opus/Sonnet-class models (F1=0.99) but GPT-OSS-120B (MXFP4 quantized) cannot follow the decomposition instructions regardless of prompt quality. The same prompt that achieves near-perfect scores with Claude produces identical failure behavior with GPT-OSS: bash for-loops, context overflow, zero child dispatch.
 
-## Our Adaptation: hew + RLM
+## Claude Results (cpair, Opus 4 via Cosmos proxy)
 
-hew (bash-only coding agent) implements RLM by spawning child `hu -p` processes. Each child gets a focused instruction, operates in its own 128K context window, and returns results via `--trajectory` JSON files. Parent orchestrates: estimate → partition → dispatch → validate → collect → merge.
+| Run | Prompt | P | R | F1 | Children | Notes |
+|-----|--------|------|------|------|----------|-------|
+| 1 | No RLM | 0.00 | 0.00 | 0.00 | 0 | while-loops killed |
+| 2 | RLM v1 | 0.24 | 0.78 | 0.37 | 40 (16 killed) | Mass backgrounding, children used while-loops |
+| 3 | RLM v2 (+bulk ops) | 0.00 | 0.00 | 0.00 | 0 | Parent skipped decomposition (scope leak) |
+| 4 | RLM v3 (scoped bulk) | 0.99 | 1.00 | 0.99 | 10 (0 killed) | All children succeeded |
+| 5 | Base only (no RLM) | 0.00 | 0.00 | 0.00 | 0 | Wrong cwd, hallucinated answer |
 
-Children don't get the RLM prompt, limiting recursion depth to 1.
+## GPT-OSS-120B Results (spark, MXFP4 via vLLM)
 
-## Prompt Evolution
+| Run | Prompt | Children | Notes |
+|-----|--------|----------|-------|
+| v1-v3 | Various | 0 | Ignored RLM, wrote bash loops |
+| v4 | MUST use hu -p | 10 | Children spawned but wrong grep logic (7 TP/200) |
+| v5-v6 | Prescriptive child instructions | 10 | Wrong grep flags, fell back to bash |
+| v7-v7c | Same as Claude winning v3 | 0 | Ignored RLM entirely, context overflow |
+| v8 | Exact Claude winning prompt | 0 | 6 steps, 21min, context overflow, 0 children |
 
-| Ver | Change | Model Behavior | Failure Mode |
-|-----|--------|---------------|--------------|
-| v1 | "Most tasks fit in a single context" | Ignored RLM, wrote bash pipelines | Opt-out framing gave permission to skip |
-| v2 | Removed opt-out, added size estimation | Followed RLM pattern conceptually | hu only executed first bash block per turn |
-| v3 | hu executes all bash blocks | Chunked by subdir, processed all 71 | Wrote bash for-loop, not hu -p children. Context overflow |
-| v4 | "MUST use hu -p, not for-loops" | Spawned 10 hu -p children (high-water mark: 7 TP/200) | Children's grep -o outputs file:match, not bare symbols |
-| v5 | Prescriptive child instructions, bad/good example | Spawned children, followed structure | Used --exclude='dir/*' instead of --exclude-dir |
-| v6 | Added --exclude-dir guidance | Backgrounded children with &, cnt==1 approach | Race condition: parent didn't wait. Raw grep output, fell back to bash pipeline |
+## Key Findings
 
-## GPT-OSS-120B Behavioral Patterns
+1. **RLM is a model capability test, not just a prompt engineering problem.** The v3 prompt encodes everything needed — estimation, partitioning, dispatch, validation, retry, merge. Claude follows it. GPT-OSS ignores it.
 
-- **Prefers bash idioms over subprocess orchestration.** Every version where the model had a choice, it wrote for-loops/pipes/backgrounding rather than sequential hu -p calls.
-- **Doesn't self-correct CLI flag errors.** --exclude vs --exclude-dir, grep -o output format — the model doesn't test its assumptions about tool behavior.
-- **Loses focus on output format.** Algorithm may be correct but output is raw grep lines instead of the requested bare symbol names.
-- **Backgrounds by default.** v6 used & unprompted. Must explicitly require sequential execution.
-- **Follows prescriptive instructions literally but misses implied constraints.** Structural compliance without semantic understanding of what the instructions protect against.
-- **MXFP4 quantized (128K context).** Quantization may contribute to reasoning degradation on multi-step CLI tool usage.
+2. **The "scope leak" anti-pattern is real.** Instructions for children get consumed by the parent unless explicitly scoped. Fix: "This is about the child's internal approach — NOT a reason to skip decomposition."
 
-## Evaluation Task: Dead Export Detection
+3. **Sequential dispatch beats mass backgrounding.** 10 sequential children: 0 killed. 40 backgrounded: 16 killed.
 
-**Task**: Find EXPORT_SYMBOL/EXPORT_SYMBOL_GPL in drivers/gpu/drm/ never referenced elsewhere in the Linux kernel.
+4. **Prompt dilution is real but secondary.** Removing 380 lines of planning workflow from the prompt didn't help GPT-OSS. The model's instruction-following capacity is the bottleneck, not prompt length.
 
-**Ground truth** (132 dead exports of 1644 total, 53s with xargs -P):
-1. Extract symbols: `grep -rhoP 'EXPORT_SYMBOL(?:_GPL)?\s*\(\s*\K[a-zA-Z_][a-zA-Z0-9_]*' drivers/gpu/drm/ | sort -u`
-2. For each, check external refs: `grep -rw --include='*.c' --include='*.h' "$sym" . | grep -v '/drivers/gpu/drm/' | head -1`
-3. Zero matches = dead export
+5. **MXFP4 quantization may degrade instruction-following.** GPT-OSS at full precision might perform differently, but we can't test this on DGX Spark hardware.
 
-**Scoring**: Precision = TP/(TP+FP), Recall = TP/(TP+FN), F1 = harmonic mean. Answer extraction: last message from trajectory JSON, parse bare C identifiers, sort -u, compare with comm.
+## Winning Prompt Location
 
-## Results
-
-| Run | Prec | Rec | F1 | Steps | Time | Notes |
-|-----|------|-----|-----|-------|------|-------|
-| v1 GPT-OSS baseline | 0.08 | 0.93 | 0.15 | 3 | 132s | Dumped all exports |
-| v1 GPT-OSS +rlm | 0.08 | 1.00 | 0.15 | 11 | 748s | Ignored RLM |
-| v4 +rlm | 0.04 | 0.05 | 0.04 | 14 | 804s | Best: children spawned, wrong grep |
-| v5 +rlm | N/A | 0.00 | 0.00 | 7 | 303s | --exclude bug |
-| v6 +rlm | N/A | 0.00 | 0.00 | 7 | 532s | Fell back to bash |
-
-## Key Lessons
-
-1. **Opt-out framing kills adoption.** "Most tasks fit in a single context" = permission to skip.
-2. **Computational triggers matter.** Context-window triggers alone aren't enough; add iteration count and wall-time thresholds.
-3. **Children need prescriptive algorithms including exact CLI flags and output format specs.** Prescribing the algorithm without prescribing tool invocations is insufficient for this model.
-4. **grep flags are a systematic failure point.** --exclude vs --exclude-dir, -o format, -f bulk matching — GPT-OSS-120B consistently gets these wrong.
-5. **Multi-block execution enables both good patterns (dispatch+collect) and bad (long bash pipelines).**
-6. **GPT-OSS-120B follows RLM structure when heavily constrained but makes systematic CLI tool errors.** The prompt must compensate for weak tool-use reasoning. This is not "model can't do it" — v4 spawned children and got 7 TP.
-7. **No few-shot example has been tried yet.** All six versions used zero-shot instruction-only prompting.
-8. **Chain-of-thought for parent planning is untried.** The parent needs to reason about partitioning strategy before writing code.
-
-## Suggested Next Directions
-
-- **Few-shot example**: Show a complete worked example of RLM decomposition (parent prompt → child dispatch → trajectory collection → merge) for any task, not just dead exports.
-- **Template constraint**: Provide a fill-in-the-blank template for child dispatch instead of describing what to do:
-  ```
-  hu -p "INSTRUCTION" --trajectory /tmp/rlm-child-N.json --max-steps 10
-  # Wait for completion before next child
-  ```
-- **Output format in child instructions**: Every child instruction must end with "Your output MUST be: one item per line, nothing else."
-- **Sequential execution constraint**: Explicitly ban backgrounding children with &.
-- **Validation step**: After children return, parent sanity-checks a sample before merging.
+~/AGENTS.md (managed by chezmoi) — the RLM v3 prompt with scoped bulk ops. Verified identical to docs/rlm-experiment/prompts/run4-system-prompt.txt.
 
 ## Infrastructure
 
-- GPT-OSS-120B on DGX Spark via vLLM (MXFP4, 128K context)
-- Linux kernel shallow clone at /tmp/linux
+- hew v0.6.0: --no-system-prompt, --system-prompt-append, --dump-system-prompt
+- Eval task: dead export detection in Linux kernel drivers/gpu/drm/
+- Ground truth: parallel grep, ~53s, deterministic
+- Branch: rlm-experiment (cosgroveb/hew)
 - Eval artifacts: ~/code/private-evals/hew/
-- Current RLM prompt: ~/AGENTS.md (moved from hew prompt.go)
-- hew repo: ~/code/hew
