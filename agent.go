@@ -15,6 +15,9 @@ const DefaultMaxSteps = 100
 // DoneSignal is the marker the model emits (outside any code block) to signal task completion.
 const DoneSignal = "<done/>"
 
+// ErrClarificationNeeded means the model stopped to request more user input.
+var ErrClarificationNeeded = errors.New("clarification needed")
+
 // Agent runs the query-parse-execute loop.
 type Agent struct {
 	model    Model
@@ -75,6 +78,48 @@ func summarizeCommand(cmd string) string {
 	return fmt.Sprintf("%s ... (%d lines)", first, len(lines))
 }
 
+func formatCommandOutput(result CommandResult) string {
+	var b strings.Builder
+	b.WriteString("[command]\n")
+	b.WriteString(escapeSectionContent(result.Command))
+	b.WriteString("\n[/command]\n")
+	b.WriteString("[exit_code]\n")
+	fmt.Fprintf(&b, "%d", result.ExitCode)
+	b.WriteString("\n[/exit_code]\n")
+	b.WriteString("[stdout]\n")
+	b.WriteString(escapeSectionContent(result.Stdout))
+	b.WriteString("\n[/stdout]\n")
+	b.WriteString("[stderr]\n")
+	b.WriteString(escapeSectionContent(result.Stderr))
+	b.WriteString("\n[/stderr]")
+	return b.String()
+}
+
+func escapeSectionContent(content string) string {
+	replacer := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		"[", "&#91;",
+		"]", "&#93;",
+	)
+	return replacer.Replace(content)
+}
+
+func hasCommandResult(messages []Message) bool {
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		if strings.Contains(msg.Content, "[command]\n") &&
+			strings.Contains(msg.Content, "[stdout]\n") &&
+			strings.Contains(msg.Content, "[stderr]\n") {
+			return true
+		}
+	}
+	return false
+}
+
 // Step runs one query-parse-execute cycle. It does not enforce step limits
 // or track format errors — that is Run's job.
 func (a *Agent) Step(ctx context.Context) (StepResult, error) {
@@ -96,11 +141,21 @@ func (a *Agent) Step(ctx context.Context) (StepResult, error) {
 			a.notify(EventDebug{Message: "done signal received"})
 			return StepResult{Response: resp, Action: DoneSignal}, nil
 		}
+		hasPriorCommandResult := hasCommandResult(a.messages)
+		if !hasPriorCommandResult && !strings.Contains(resp.Message.Content, "```bash") && strings.TrimSpace(resp.Message.Content) != "" {
+			a.notify(EventDebug{Message: "awaiting user clarification"})
+			return StepResult{Response: resp, Action: ClarifySignal}, nil
+		}
 		a.notify(EventDebug{Message: "no bash block found"})
 		a.notify(EventFormatError{})
+		reminder := "Your response did not include a bash code block. Include one or more ```bash blocks, or include <done/> (with no code block) when finished."
+		if hasPriorCommandResult {
+			a.notify(EventDebug{Message: "post-command no-op guard triggered"})
+			reminder = "After commands have run, do not ask the user for more pasted command output or clarification without acting. Inspect the working tree and the prior [command]/[stdout]/[stderr] results already in the conversation, then continue with a ```bash block, or include <done/> when finished."
+		}
 		a.messages = append(a.messages, Message{
 			Role:    "user",
-			Content: "Your response did not include a bash code block. Include one or more ```bash blocks, or include <done/> (with no code block) when finished.",
+			Content: reminder,
 		})
 		return StepResult{Response: resp}, nil
 	}
@@ -118,22 +173,26 @@ func (a *Agent) Step(ctx context.Context) (StepResult, error) {
 		a.notify(EventDebug{Message: fmt.Sprintf("cwd: %s", a.cwd)})
 		a.notify(EventCommandStart{Command: action, Dir: a.cwd})
 
-		output, execErr := a.executor.Execute(ctx, action, a.cwd)
+		execResult, execErr := a.executor.Execute(ctx, action, a.cwd)
+		payload := formatCommandOutput(execResult)
 		if execErr != nil {
 			a.notify(EventDebug{Message: fmt.Sprintf("command error: %v", execErr)})
-			output += "\n(error: " + execErr.Error() + ")"
-			lastErr = execErr
 		}
-		a.notify(EventCommandDone{Output: output, Err: execErr})
+		a.notify(EventCommandDone{
+			Command:  action,
+			Stdout:   execResult.Stdout,
+			Stderr:   execResult.Stderr,
+			ExitCode: execResult.ExitCode,
+			Err:      execErr,
+		})
 
-		if combinedOutput != "" && output != "" {
+		if combinedOutput != "" && payload != "" {
 			combinedOutput += "\n"
 		}
-		combinedOutput += output
+		combinedOutput += payload
+		lastErr = execErr
 	}
 
-	// Only add message if output is non-empty; Anthropic API rejects empty content blocks.
-	// If commands produced no output, use a placeholder to keep the conversation flowing.
 	content := combinedOutput
 	if content == "" {
 		content = "(command completed with no output)"
@@ -141,12 +200,6 @@ func (a *Agent) Step(ctx context.Context) (StepResult, error) {
 	a.messages = append(a.messages, Message{Role: "user", Content: content})
 
 	result := StepResult{Response: resp, Action: actions[0], Output: combinedOutput, ExecErr: lastErr}
-
-	// If the response also contained <done/>, signal completion after executing commands.
-	if hasDone {
-		a.notify(EventDebug{Message: "done signal received"})
-		result.Action = DoneSignal
-	}
 
 	return result, nil
 }
@@ -165,6 +218,9 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 
 		if result.Action == DoneSignal {
 			return nil
+		}
+		if result.Action == ClarifySignal {
+			return ErrClarificationNeeded
 		}
 
 		if result.Action == "" {

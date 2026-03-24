@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -19,6 +20,8 @@ import (
 
 // version is set at build time via -ldflags.
 var version = "dev"
+
+const exitClarificationNeeded = 2
 
 func main() {
 	flags := flag.NewFlagSet("hew", flag.ContinueOnError)
@@ -307,6 +310,10 @@ func runTUI(agent *hew.Agent, taskPrompt, trajectory, modelName, cwd string, eve
 		}
 
 		if fm.agentErr != nil {
+			if errors.Is(fm.agentErr, hew.ErrClarificationNeeded) {
+				fmt.Fprintln(os.Stderr, "Clarification needed.")
+				os.Exit(exitClarificationNeeded)
+			}
 			os.Exit(1)
 		}
 		return
@@ -348,6 +355,9 @@ func runTUI(agent *hew.Agent, taskPrompt, trajectory, modelName, cwd string, eve
 	}
 
 	if fm.agentErr != nil {
+		if errors.Is(fm.agentErr, hew.ErrClarificationNeeded) {
+			return
+		}
 		os.Exit(1)
 	}
 }
@@ -373,7 +383,12 @@ func runPlain(agent *hew.Agent, taskPrompt, trajectory string, eventLog *os.File
 		case hew.EventCommandStart:
 			fmt.Fprintf(os.Stdout, "--- running: %s ---\n", summarizeCommand(ev.Command)) //nolint:errcheck
 		case hew.EventCommandDone:
-			fmt.Fprintln(os.Stdout, ev.Output)      //nolint:errcheck
+			if ev.Stdout != "" {
+				fmt.Fprint(os.Stdout, ev.Stdout) //nolint:errcheck
+			}
+			if ev.Stderr != "" {
+				fmt.Fprint(os.Stderr, ev.Stderr) //nolint:errcheck
+			}
 			fmt.Fprintln(os.Stdout, "--- done ---") //nolint:errcheck
 		case hew.EventFormatError:
 			// handled by agent loop
@@ -392,6 +407,10 @@ func runPlain(agent *hew.Agent, taskPrompt, trajectory string, eventLog *os.File
 	}
 
 	if runErr != nil {
+		if errors.Is(runErr, hew.ErrClarificationNeeded) {
+			fmt.Fprintln(os.Stderr, "Clarification needed.")
+			os.Exit(exitClarificationNeeded)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", runErr)
 		os.Exit(1)
 	}

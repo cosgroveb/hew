@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -18,6 +19,8 @@ import (
 
 // version is set at build time via -ldflags.
 var version = "dev"
+
+const exitClarificationNeeded = 2
 
 func main() {
 	flags := flag.NewFlagSet("hu", flag.ContinueOnError)
@@ -214,7 +217,12 @@ Environment:
 		case hew.EventCommandStart:
 			fmt.Fprintf(os.Stdout, "--- running: %s ---\n", summarizeCommand(e.Command)) //nolint:errcheck
 		case hew.EventCommandDone:
-			fmt.Fprintln(os.Stdout, e.Output)       //nolint:errcheck
+			if e.Stdout != "" {
+				fmt.Fprint(os.Stdout, e.Stdout) //nolint:errcheck
+			}
+			if e.Stderr != "" {
+				fmt.Fprint(os.Stderr, e.Stderr) //nolint:errcheck
+			}
 			fmt.Fprintln(os.Stdout, "--- done ---") //nolint:errcheck
 		case hew.EventFormatError:
 			// handled by agent loop; nothing to print
@@ -298,6 +306,10 @@ Environment:
 			}
 		}
 		if runErr != nil {
+			if errors.Is(runErr, hew.ErrClarificationNeeded) {
+				fmt.Fprintln(os.Stderr, "Clarification needed.")
+				os.Exit(exitClarificationNeeded)
+			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", runErr)
 			os.Exit(1)
 		}
@@ -318,6 +330,10 @@ Environment:
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		if err := agent.Run(ctx, input); err != nil {
+			if errors.Is(err, hew.ErrClarificationNeeded) {
+				stop()
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		}
 		stop()
@@ -352,9 +368,12 @@ func writeEventLog(f *os.File, e hew.Event) {
 		je = jsonEvent{Type: "command_start", Payload: e}
 	case hew.EventCommandDone:
 		je = jsonEvent{Type: "command_done", Payload: struct {
-			Output string `json:"output"`
-			Err    string `json:"err,omitempty"`
-		}{Output: e.Output, Err: errString(e.Err)}}
+			Command  string `json:"command"`
+			Stdout   string `json:"stdout"`
+			Stderr   string `json:"stderr"`
+			ExitCode int    `json:"exit_code"`
+			Err      string `json:"err,omitempty"`
+		}{Command: e.Command, Stdout: e.Stdout, Stderr: e.Stderr, ExitCode: e.ExitCode, Err: errString(e.Err)}}
 	case hew.EventFormatError:
 		je = jsonEvent{Type: "format_error", Payload: e}
 	case hew.EventDebug:

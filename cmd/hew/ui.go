@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -129,7 +130,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.chat.streaming {
 			m.chat.commitPartialStream()
 		}
-		if msg.err != nil {
+		if msg.err != nil && !errors.Is(msg.err, hew.ErrClarificationNeeded) {
 			m.chat.content.WriteString(
 				m.styles.Chat.Warning.Render(fmt.Sprintf("\n%s Agent error: %s", iconError, msg.err)),
 			)
@@ -188,7 +189,7 @@ func (m *model) routeEvent(e hew.Event) {
 		m.status.updateFromResponse(ev.Usage)
 	case hew.EventCommandDone:
 		m.status.incrementStep()
-		m.files.trackFromCommand(lastCmd, ev.Output)
+		m.files.trackFromCommand(lastCmd, ev.Stdout)
 	case hew.EventCommandStart, hew.EventFormatError, hew.EventDebug:
 		// handled by chat.appendEvent only
 	default:
