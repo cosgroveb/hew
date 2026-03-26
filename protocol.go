@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // TurnType identifies the kind of structured turn the model emitted.
@@ -35,20 +36,11 @@ var (
 // extractJSON finds the first top-level JSON object in raw text.
 // Handles prose wrapping, code fences, and nested braces.
 func extractJSON(raw string) (string, bool) {
-	start := -1
-	for i, ch := range raw {
-		if ch == '{' {
-			start = i
-			break
-		}
-	}
+	start := strings.IndexByte(raw, '{')
 	if start < 0 {
 		return "", false
 	}
-
-	depth := 0
-	inString := false
-	escaped := false
+	depth, inString, escaped := 0, false, false
 	for i := start; i < len(raw); i++ {
 		ch := raw[i]
 		if escaped {
@@ -108,7 +100,7 @@ func ParseTurn(raw string) (Turn, error) {
 	return turn, nil
 }
 
-// errorToReason maps a parse error to a machine-readable reason string.
+// errorToReason returns a machine-readable reason string for a parse error.
 func errorToReason(err error) string {
 	switch {
 	case errors.Is(err, ErrInvalidJSON):

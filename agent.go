@@ -66,20 +66,9 @@ func (a *Agent) AddMessages(msgs []Message) error {
 }
 
 func formatCommandOutput(result CommandResult) string {
-	var b strings.Builder
-	b.WriteString("[command]\n")
-	b.WriteString(escapeSectionContent(result.Command))
-	b.WriteString("\n[/command]\n")
-	b.WriteString("[exit_code]\n")
-	fmt.Fprintf(&b, "%d", result.ExitCode)
-	b.WriteString("\n[/exit_code]\n")
-	b.WriteString("[stdout]\n")
-	b.WriteString(escapeSectionContent(result.Stdout))
-	b.WriteString("\n[/stdout]\n")
-	b.WriteString("[stderr]\n")
-	b.WriteString(escapeSectionContent(result.Stderr))
-	b.WriteString("\n[/stderr]")
-	return b.String()
+	esc := escapeSectionContent
+	return fmt.Sprintf("[command]\n%s\n[/command]\n[exit_code]\n%d\n[/exit_code]\n[stdout]\n%s\n[/stdout]\n[stderr]\n%s\n[/stderr]",
+		esc(result.Command), result.ExitCode, esc(result.Stdout), esc(result.Stderr))
 }
 
 func escapeSectionContent(content string) string {
