@@ -26,27 +26,27 @@ type EventCommandDone struct {
 	Err      error
 }
 
-// EventFormatError fires when the LLM response has no bash block.
-type EventFormatError struct{}
+// EventProtocolFailure fires when the model response fails protocol validation.
+type EventProtocolFailure struct {
+	Reason  string // machine-readable: "invalid_json", "missing_command", etc.
+	Message string // human-readable explanation
+}
 
 // EventDebug carries internal diagnostic messages.
 type EventDebug struct {
 	Message string
 }
 
-// ClarifySignal marks a step where the agent is waiting for more user input.
-const ClarifySignal = "<clarify/>"
-
-func (EventResponse) event()     {}
-func (EventCommandStart) event() {}
-func (EventCommandDone) event()  {}
-func (EventFormatError) event()  {}
-func (EventDebug) event()        {}
+func (EventResponse) event()        {}
+func (EventCommandStart) event()    {}
+func (EventCommandDone) event()     {}
+func (EventProtocolFailure) event() {}
+func (EventDebug) event()           {}
 
 // StepResult is the outcome of one Step call.
 type StepResult struct {
 	Response Response // the LLM response
-	Action   string   // parsed command, DoneSignal for completion, "" for format error
+	Turn     Turn     // parsed protocol turn (zero value on protocol failure)
 	Output   string   // formatted command output payload(s), "" if no command ran
 	ExecErr  error    // nil if command succeeded or didn't run
 }

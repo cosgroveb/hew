@@ -12,9 +12,6 @@ import (
 // DefaultMaxSteps caps agent iterations when MaxSteps is not set.
 const DefaultMaxSteps = 100
 
-// DoneSignal is the marker the model emits (outside any code block) to signal task completion.
-const DoneSignal = "<done/>"
-
 // ErrClarificationNeeded means the model stopped to request more user input.
 var ErrClarificationNeeded = errors.New("clarification needed")
 
@@ -106,22 +103,8 @@ func escapeSectionContent(content string) string {
 	return replacer.Replace(content)
 }
 
-func hasCommandResult(messages []Message) bool {
-	for _, msg := range messages {
-		if msg.Role != "user" {
-			continue
-		}
-		if strings.Contains(msg.Content, "[command]\n") &&
-			strings.Contains(msg.Content, "[stdout]\n") &&
-			strings.Contains(msg.Content, "[stderr]\n") {
-			return true
-		}
-	}
-	return false
-}
-
 // Step runs one query-parse-execute cycle. It does not enforce step limits
-// or track format errors — that is Run's job.
+// or track protocol failures — that is Run's job.
 func (a *Agent) Step(ctx context.Context) (StepResult, error) {
 	a.started = true
 	a.notify(EventDebug{Message: "querying model..."})
@@ -133,82 +116,57 @@ func (a *Agent) Step(ctx context.Context) (StepResult, error) {
 	a.messages = append(a.messages, resp.Message)
 	a.notify(EventResponse{Message: resp.Message, Usage: resp.Usage})
 
-	actions, parseErr := ExtractCommands(resp.Message.Content)
-	hasDone := strings.Contains(resp.Message.Content, DoneSignal)
-
-	if errors.Is(parseErr, ErrNoCommand) {
-		if hasDone {
-			a.notify(EventDebug{Message: "done signal received"})
-			return StepResult{Response: resp, Action: DoneSignal}, nil
-		}
-		hasPriorCommandResult := hasCommandResult(a.messages)
-		if !hasPriorCommandResult && !strings.Contains(resp.Message.Content, "```bash") && strings.TrimSpace(resp.Message.Content) != "" {
-			a.notify(EventDebug{Message: "awaiting user clarification"})
-			return StepResult{Response: resp, Action: ClarifySignal}, nil
-		}
-		a.notify(EventDebug{Message: "no bash block found"})
-		a.notify(EventFormatError{})
-		reminder := "Your response did not include a bash code block. Include one or more ```bash blocks, or include <done/> (with no code block) when finished."
-		if hasPriorCommandResult {
-			a.notify(EventDebug{Message: "post-command no-op guard triggered"})
-			reminder = "After commands have run, do not ask the user for more pasted command output or clarification without acting. Inspect the working tree and the prior [command]/[stdout]/[stderr] results already in the conversation, then continue with a ```bash block, or include <done/> when finished."
-		}
+	turn, parseErr := ParseTurn(resp.Message.Content)
+	if parseErr != nil {
+		a.notify(EventProtocolFailure{
+			Reason:  errorToReason(parseErr),
+			Message: parseErr.Error(),
+		})
+		// Append correction message
 		a.messages = append(a.messages, Message{
 			Role:    "user",
-			Content: reminder,
+			Content: protocolCorrectionMessage(parseErr),
 		})
 		return StepResult{Response: resp}, nil
 	}
-	if parseErr != nil {
-		return StepResult{}, fmt.Errorf("parse action: %w", parseErr)
-	}
 
-	a.notify(EventDebug{Message: fmt.Sprintf("parsed %d bash block(s)", len(actions))})
+	switch turn.Type {
+	case TurnTypeClarify:
+		a.notify(EventDebug{Message: "awaiting user clarification"})
+		return StepResult{Response: resp, Turn: turn}, nil
 
-	var combinedOutput string
-	var lastErr error
-	for _, action := range actions {
-		a.notify(EventDebug{Message: fmt.Sprintf("parsed action: %s", summarizeCommand(action))})
-		a.updateCwd(action)
-		a.notify(EventDebug{Message: fmt.Sprintf("cwd: %s", a.cwd)})
-		a.notify(EventCommandStart{Command: action, Dir: a.cwd})
+	case TurnTypeDone:
+		a.notify(EventDebug{Message: "done signal received"})
+		return StepResult{Response: resp, Turn: turn}, nil
 
-		execResult, execErr := a.executor.Execute(ctx, action, a.cwd)
+	case TurnTypeAct:
+		a.updateCwd(turn.Command)
+		a.notify(EventCommandStart{Command: turn.Command, Dir: a.cwd})
+		execResult, execErr := a.executor.Execute(ctx, turn.Command, a.cwd)
 		payload := formatCommandOutput(execResult)
-		if execErr != nil {
-			a.notify(EventDebug{Message: fmt.Sprintf("command error: %v", execErr)})
-		}
 		a.notify(EventCommandDone{
-			Command:  action,
+			Command:  turn.Command,
 			Stdout:   execResult.Stdout,
 			Stderr:   execResult.Stderr,
 			ExitCode: execResult.ExitCode,
 			Err:      execErr,
 		})
-
-		if combinedOutput != "" && payload != "" {
-			combinedOutput += "\n"
+		content := payload
+		if content == "" {
+			content = "(command completed with no output)"
 		}
-		combinedOutput += payload
-		lastErr = execErr
+		a.messages = append(a.messages, Message{Role: "user", Content: content})
+		return StepResult{Response: resp, Turn: turn, Output: payload, ExecErr: execErr}, nil
 	}
 
-	content := combinedOutput
-	if content == "" {
-		content = "(command completed with no output)"
-	}
-	a.messages = append(a.messages, Message{Role: "user", Content: content})
-
-	result := StepResult{Response: resp, Action: actions[0], Output: combinedOutput, ExecErr: lastErr}
-
-	return result, nil
+	return StepResult{Response: resp}, nil
 }
 
 // Run loops Step until exit or step limit. Message history persists across calls.
 func (a *Agent) Run(ctx context.Context, task string) error {
 	a.messages = append(a.messages, Message{Role: "user", Content: task})
 	steps := 0
-	formatErrors := 0
+	protocolFailures := 0
 
 	for {
 		result, err := a.Step(ctx)
@@ -216,39 +174,36 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 			return err
 		}
 
-		if result.Action == DoneSignal {
+		switch result.Turn.Type {
+		case TurnTypeDone:
 			return nil
-		}
-		if result.Action == ClarifySignal {
+		case TurnTypeClarify:
 			return ErrClarificationNeeded
-		}
-
-		if result.Action == "" {
-			// Format error — Step already sent the reminder.
-			formatErrors++
-			a.notify(EventDebug{Message: fmt.Sprintf("consecutive format errors: %d", formatErrors)})
-			if formatErrors >= 2 {
-				return fmt.Errorf("consecutive format errors, exiting")
+		case TurnTypeAct:
+			protocolFailures = 0
+			steps++
+			a.notify(EventDebug{Message: fmt.Sprintf("step %d/%d", steps, a.MaxSteps)})
+			if a.MaxSteps > 0 && steps >= a.MaxSteps {
+				a.notify(EventDebug{Message: "step limit reached, requesting summary"})
+				a.messages = append(a.messages, Message{
+					Role:    "user",
+					Content: `Step limit reached. Summarize your progress and signal completion: {"type":"done","summary":"..."}`,
+				})
+				resp, err := a.model.Query(ctx, a.messages)
+				if err != nil {
+					return fmt.Errorf("query model (final): %w", err)
+				}
+				a.messages = append(a.messages, resp.Message)
+				a.notify(EventResponse{Message: resp.Message, Usage: resp.Usage})
+				return nil
 			}
-			continue
-		}
-
-		formatErrors = 0
-		steps++
-		a.notify(EventDebug{Message: fmt.Sprintf("step %d/%d", steps, a.MaxSteps)})
-		if a.MaxSteps > 0 && steps >= a.MaxSteps {
-			a.notify(EventDebug{Message: "step limit reached, requesting summary"})
-			a.messages = append(a.messages, Message{
-				Role:    "user",
-				Content: "Step limit reached. Summarize your progress and include <done/> to finish.",
-			})
-			resp, err := a.model.Query(ctx, a.messages)
-			if err != nil {
-				return fmt.Errorf("query model (final): %w", err)
+		default:
+			// Protocol failure — Step already sent correction
+			protocolFailures++
+			a.notify(EventDebug{Message: fmt.Sprintf("consecutive protocol failures: %d", protocolFailures)})
+			if protocolFailures >= 2 {
+				return fmt.Errorf("consecutive protocol failures, exiting")
 			}
-			a.messages = append(a.messages, resp.Message)
-			a.notify(EventResponse{Message: resp.Message, Usage: resp.Usage})
-			return nil
 		}
 	}
 }

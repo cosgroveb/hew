@@ -107,3 +107,26 @@ func ParseTurn(raw string) (Turn, error) {
 	}
 	return turn, nil
 }
+
+// errorToReason maps a parse error to a machine-readable reason string.
+func errorToReason(err error) string {
+	switch {
+	case errors.Is(err, ErrInvalidJSON):
+		return "invalid_json"
+	case errors.Is(err, ErrUnknownTurnType):
+		return "unknown_turn_type"
+	case errors.Is(err, ErrMissingCommand):
+		return "missing_command"
+	case errors.Is(err, ErrEmptyClarify):
+		return "empty_clarify"
+	case errors.Is(err, ErrEmptySummary):
+		return "empty_summary"
+	default:
+		return "unknown"
+	}
+}
+
+// protocolCorrectionMessage returns a compact correction message for the model.
+func protocolCorrectionMessage(err error) string {
+	return fmt.Sprintf(`Protocol error: %s. Respond with exactly one JSON object: {"type":"act","command":"..."} or {"type":"clarify","question":"..."} or {"type":"done","summary":"..."}`, err)
+}

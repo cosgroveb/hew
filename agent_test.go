@@ -66,7 +66,7 @@ func collectEvents() (func(Event), *[]Event) {
 func TestStep(t *testing.T) {
 	t.Run("returns command result", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\nls\n```"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"ls"}`}},
 		}}
 		executor := &fakeExecutor{results: []CommandResult{{Stdout: "file1.go\n", ExitCode: 0}}}
 
@@ -77,8 +77,11 @@ func TestStep(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if result.Action != "ls" {
-			t.Errorf("got action %q, want %q", result.Action, "ls")
+		if result.Turn.Type != TurnTypeAct {
+			t.Errorf("got turn type %q, want %q", result.Turn.Type, TurnTypeAct)
+		}
+		if result.Turn.Command != "ls" {
+			t.Errorf("got command %q, want %q", result.Turn.Command, "ls")
 		}
 		wantOutput := mustCommandPayload(t, CommandResult{Command: "ls", Stdout: "file1.go\n", ExitCode: 0})
 		if result.Output != wantOutput {
@@ -89,9 +92,9 @@ func TestStep(t *testing.T) {
 		}
 	})
 
-	t.Run("returns done action", func(t *testing.T) {
+	t.Run("returns done turn", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"All tasks completed."}`}},
 		}}
 
 		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
@@ -101,17 +104,17 @@ func TestStep(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if result.Action != DoneSignal {
-			t.Errorf("got action %q, want %q", result.Action, DoneSignal)
+		if result.Turn.Type != TurnTypeDone {
+			t.Errorf("got turn type %q, want %q", result.Turn.Type, TurnTypeDone)
 		}
 		if result.Output != "" {
 			t.Errorf("expected empty output for done, got %q", result.Output)
 		}
 	})
 
-	t.Run("returns clarify action on plain text question", func(t *testing.T) {
+	t.Run("returns clarify turn", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "What directory should I inspect?"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"clarify","question":"Which directory should I inspect?"}`}},
 		}}
 
 		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
@@ -121,84 +124,56 @@ func TestStep(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if result.Action != ClarifySignal {
-			t.Errorf("expected clarify action, got %q", result.Action)
+		if result.Turn.Type != TurnTypeClarify {
+			t.Errorf("expected clarify turn, got %q", result.Turn.Type)
+		}
+		if result.Turn.Question != "Which directory should I inspect?" {
+			t.Errorf("wrong question: %q", result.Turn.Question)
 		}
 		if len(agent.messages) != 2 {
-			t.Fatalf("expected no reminder message, got %d messages", len(agent.messages))
+			t.Fatalf("expected no extra message appended for clarify, got %d messages", len(agent.messages))
 		}
 	})
 
-	t.Run("returns empty action on malformed bash response", func(t *testing.T) {
+	t.Run("protocol failure on bad JSON emits EventProtocolFailure", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "I'll act now.\n\n```bash\n```"}},
+			{Message: Message{Role: "assistant", Content: "Here is my plan for fixing the bug."}},
 		}}
 
 		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
-		agent.messages = append(agent.messages, Message{Role: "user", Content: "do something"})
+		agent.messages = append(agent.messages, Message{Role: "user", Content: "fix it"})
+
+		var events []Event
+		agent.Notify = func(e Event) { events = append(events, e) }
 
 		result, err := agent.Step(context.Background())
 		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+			t.Fatal(err)
 		}
-		if result.Action != "" {
-			t.Errorf("expected empty action on format error, got %q", result.Action)
+		// Protocol failure: Turn should be zero-value
+		if result.Turn.Type != "" {
+			t.Fatalf("expected zero Turn, got %v", result.Turn.Type)
 		}
+		// Should have emitted EventProtocolFailure
+		found := false
+		for _, e := range events {
+			if _, ok := e.(EventProtocolFailure); ok {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("expected EventProtocolFailure event")
+		}
+		// Should have appended correction message
 		last := agent.messages[len(agent.messages)-1]
-		if !strings.Contains(last.Content, "bash") {
-			t.Error("format error reminder should mention bash")
-		}
-	})
-
-	t.Run("post-command no-op guard triggers after prior command output", func(t *testing.T) {
-		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "I need more information before I can continue."}},
-		}}
-
-		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
-		agent.messages = append(agent.messages,
-			Message{Role: "user", Content: "debug this"},
-			Message{Role: "assistant", Content: "```bash\nfalse\n```"},
-			Message{Role: "user", Content: "[command]\nfalse\n[/command]\n[exit_code]\n1\n[/exit_code]\n[stdout]\n\n[/stdout]\n[stderr]\nnope\n[/stderr]"},
-		)
-
-		result, err := agent.Step(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if result.Action != "" {
-			t.Errorf("expected empty action on post-command no-op guard, got %q", result.Action)
-		}
-		last := agent.messages[len(agent.messages)-1]
-		if !strings.Contains(last.Content, "After commands have run, do not ask the user") {
-			t.Errorf("expected post-command reminder, got %q", last.Content)
-		}
-		if !strings.Contains(last.Content, "[stdout]") {
-			t.Errorf("expected reminder to reference prior command results, got %q", last.Content)
-		}
-	})
-
-	t.Run("post-command no-op guard does not block initial clarification", func(t *testing.T) {
-		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "Please paste the exact error message."}},
-		}}
-
-		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
-		agent.messages = append(agent.messages, Message{Role: "user", Content: "help"})
-
-		_, err := agent.Step(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		last := agent.messages[len(agent.messages)-1]
-		if strings.Contains(last.Content, "After commands have run, do not ask the user") {
-			t.Errorf("did not expect post-command reminder before any command output, got %q", last.Content)
+		if !strings.Contains(last.Content, "Protocol error") {
+			t.Errorf("expected protocol correction message, got %q", last.Content)
 		}
 	})
 
 	t.Run("emits events via Notify", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\necho hi\n```"}, Usage: Usage{InputTokens: 10, OutputTokens: 5}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"echo hi"}`}, Usage: Usage{InputTokens: 10, OutputTokens: 5}},
 		}}
 		executor := &fakeExecutor{results: []CommandResult{{Stdout: "hi\n", ExitCode: 0}}}
 		notify, events := collectEvents()
@@ -224,8 +199,8 @@ func TestStep(t *testing.T) {
 				types = append(types, "cmd_start")
 			case EventCommandDone:
 				types = append(types, "cmd_done")
-			case EventFormatError:
-				types = append(types, "fmt_error")
+			case EventProtocolFailure:
+				types = append(types, "protocol_failure")
 			}
 		}
 
@@ -256,7 +231,7 @@ func TestStep(t *testing.T) {
 
 	t.Run("nil Notify is safe", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"completed"}`}},
 		}}
 
 		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
@@ -267,14 +242,14 @@ func TestStep(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if result.Action != DoneSignal {
-			t.Errorf("got action %q, want %q", result.Action, DoneSignal)
+		if result.Turn.Type != TurnTypeDone {
+			t.Errorf("got turn type %q, want %q", result.Turn.Type, TurnTypeDone)
 		}
 	})
 
 	t.Run("empty command output never produces empty messages", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\ntouch /tmp/test\n```"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"touch /tmp/test"}`}},
 		}}
 		executor := &fakeExecutor{results: []CommandResult{{ExitCode: 0}}}
 
@@ -297,168 +272,6 @@ func TestStep(t *testing.T) {
 		want := mustCommandPayload(t, CommandResult{Command: "touch /tmp/test", ExitCode: 0})
 		if lastMsg.Content != want {
 			t.Errorf("empty output should still use command payload, got %q", lastMsg.Content)
-		}
-	})
-}
-
-func TestStepMultiBlock(t *testing.T) {
-	t.Run("executes all bash blocks sequentially", func(t *testing.T) {
-		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "Step 1:\n\n```bash\necho hello\n```\n\nStep 2:\n\n```bash\necho world\n```"}},
-		}}
-		executor := &fakeExecutor{results: []CommandResult{
-			{Stdout: "hello\n", ExitCode: 0},
-			{Stdout: "world\n", ExitCode: 0},
-		}}
-
-		agent := NewAgent(model, executor, "/tmp")
-		agent.messages = append(agent.messages, Message{Role: "user", Content: "greet"})
-
-		result, err := agent.Step(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if executor.calls != 2 {
-			t.Errorf("expected 2 commands, got %d", executor.calls)
-		}
-		if executor.gotCmds[0] != "echo hello" {
-			t.Errorf("first command: got %q, want %q", executor.gotCmds[0], "echo hello")
-		}
-		if executor.gotCmds[1] != "echo world" {
-			t.Errorf("second command: got %q, want %q", executor.gotCmds[1], "echo world")
-		}
-		if result.Action != "echo hello" {
-			t.Errorf("Action should be first command, got %q", result.Action)
-		}
-		wantOutput := mustCommandPayload(t, CommandResult{Command: "echo hello", Stdout: "hello\n", ExitCode: 0}) + "\n" +
-			mustCommandPayload(t, CommandResult{Command: "echo world", Stdout: "world\n", ExitCode: 0})
-		if result.Output != wantOutput {
-			t.Errorf("combined output: got %q, want %q", result.Output, wantOutput)
-		}
-	})
-
-	t.Run("continues after command error", func(t *testing.T) {
-		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\nfalse\n```\n\n```bash\necho cleanup\n```"}},
-		}}
-		executor := &fakeExecutor{
-			results: []CommandResult{
-				{ExitCode: 1},
-				{Stdout: "cleaned\n", ExitCode: 0},
-			},
-			errs: []error{
-				fmt.Errorf("run command: exit status 1"),
-				nil,
-			},
-		}
-
-		agent := NewAgent(model, executor, "/tmp")
-		agent.messages = append(agent.messages, Message{Role: "user", Content: "do it"})
-
-		result, err := agent.Step(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if executor.calls != 2 {
-			t.Errorf("expected 2 commands even with error, got %d", executor.calls)
-		}
-		// ExecErr should be nil because the second command succeeded (fakeExecutor returns nil error for valid outputs)
-		if result.ExecErr != nil {
-			t.Errorf("expected nil ExecErr from last command, got %v", result.ExecErr)
-		}
-	})
-
-	t.Run("emits events for each command", func(t *testing.T) {
-		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\necho a\n```\n\n```bash\necho b\n```"}},
-		}}
-		executor := &fakeExecutor{results: []CommandResult{
-			{Stdout: "a\n", ExitCode: 0},
-			{Stdout: "b\n", ExitCode: 0},
-		}}
-		notify, events := collectEvents()
-
-		agent := NewAgent(model, executor, "/tmp")
-		agent.Notify = notify
-		agent.messages = append(agent.messages, Message{Role: "user", Content: "two commands"})
-
-		_, err := agent.Step(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		cmdStarts := 0
-		cmdDones := 0
-		for _, e := range *events {
-			switch e.(type) {
-			case EventCommandStart:
-				cmdStarts++
-			case EventCommandDone:
-				cmdDones++
-			}
-		}
-		if cmdStarts != 2 {
-			t.Errorf("expected 2 EventCommandStart, got %d", cmdStarts)
-		}
-		if cmdDones != 2 {
-			t.Errorf("expected 2 EventCommandDone, got %d", cmdDones)
-		}
-	})
-
-	t.Run("done signal after commands is ignored for that turn", func(t *testing.T) {
-		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\necho final\n```\n\nAll done.\n\n<done/>"}},
-		}}
-		executor := &fakeExecutor{results: []CommandResult{{Stdout: "final\n", ExitCode: 0}}}
-
-		agent := NewAgent(model, executor, "/tmp")
-		agent.messages = append(agent.messages, Message{Role: "user", Content: "finish"})
-
-		result, err := agent.Step(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if executor.calls != 1 {
-			t.Errorf("expected 1 command executed before done, got %d", executor.calls)
-		}
-		if result.Action != "echo final" {
-			t.Errorf("expected first command action, got %q", result.Action)
-		}
-		want := mustCommandPayload(t, CommandResult{Command: "echo final", Stdout: "final\n", ExitCode: 0})
-		if result.Output != want {
-			t.Errorf("expected output %q, got %q", want, result.Output)
-		}
-	})
-
-	t.Run("combined output appended as single message", func(t *testing.T) {
-		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\necho a\n```\n\n```bash\necho b\n```"}},
-		}}
-		executor := &fakeExecutor{results: []CommandResult{
-			{Stdout: "a\n", ExitCode: 0},
-			{Stdout: "b\n", ExitCode: 0},
-		}}
-
-		agent := NewAgent(model, executor, "/tmp")
-		agent.messages = append(agent.messages, Message{Role: "user", Content: "two"})
-
-		_, err := agent.Step(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		// Messages: initial user, assistant response, combined output
-		if len(agent.messages) != 3 {
-			t.Fatalf("expected 3 messages, got %d", len(agent.messages))
-		}
-		last := agent.messages[2]
-		if last.Role != "user" {
-			t.Errorf("last message role should be user, got %q", last.Role)
-		}
-		want := mustCommandPayload(t, CommandResult{Command: "echo a", Stdout: "a\n", ExitCode: 0}) + "\n" +
-			mustCommandPayload(t, CommandResult{Command: "echo b", Stdout: "b\n", ExitCode: 0})
-		if last.Content != want {
-			t.Errorf("last message content: got %q, want %q", last.Content, want)
 		}
 	})
 }
@@ -600,7 +413,7 @@ func TestAddMessages(t *testing.T) {
 
 	t.Run("returns error after Step", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"completed"}`}},
 		}}
 		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
 		agent.messages = append(agent.messages, Message{Role: "user", Content: "hi"})
@@ -619,8 +432,8 @@ func TestAddMessages(t *testing.T) {
 func TestAgent(t *testing.T) {
 	t.Run("single step then exit", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "Let me check\n\n```bash\nls\n```"}},
-			{Message: Message{Role: "assistant", Content: "Done!\n\nAll done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"ls","reasoning":"checking files"}`}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"Listed files successfully."}`}},
 		}}
 		executor := &fakeExecutor{results: []CommandResult{{Stdout: "file1.go\n", ExitCode: 0}}}
 
@@ -639,7 +452,7 @@ func TestAgent(t *testing.T) {
 
 	t.Run("returns after clarification request", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "Which repo should I inspect?"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"clarify","question":"Which repo should I inspect?"}`}},
 		}}
 
 		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
@@ -654,17 +467,15 @@ func TestAgent(t *testing.T) {
 		if len(msgs) != 2 {
 			t.Fatalf("expected 2 messages, got %d", len(msgs))
 		}
-		if msgs[1].Role != "assistant" || msgs[1].Content != "Which repo should I inspect?" {
-			t.Fatalf("unexpected assistant clarification message: %#v", msgs[1])
+		if msgs[1].Role != "assistant" {
+			t.Fatalf("unexpected assistant message role: %#v", msgs[1])
 		}
 	})
 
 	t.Run("respects max steps", func(t *testing.T) {
 		responses := make([]Response, 12)
-		outputs := make([]string, 10)
 		for i := 0; i < 10; i++ {
-			responses[i] = Response{Message: Message{Role: "assistant", Content: "```bash\necho step\n```"}}
-			outputs[i] = "step"
+			responses[i] = Response{Message: Message{Role: "assistant", Content: `{"type":"act","command":"echo step"}`}}
 		}
 		responses[10] = Response{Message: Message{Role: "assistant", Content: "summary"}}
 
@@ -688,7 +499,7 @@ func TestAgent(t *testing.T) {
 
 	t.Run("default max steps is 100", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"completed"}`}},
 		}}
 
 		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
@@ -705,9 +516,9 @@ func TestAgent(t *testing.T) {
 		}
 
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\ncd " + subDir + "\n```"}},
-			{Message: Message{Role: "assistant", Content: "```bash\nls\n```"}},
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: fmt.Sprintf(`{"type":"act","command":"cd %s"}`, subDir)}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"ls"}`}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"done"}`}},
 		}}
 		executor := &fakeExecutor{results: []CommandResult{{ExitCode: 0}, {Stdout: "files", ExitCode: 0}}}
 
@@ -725,9 +536,9 @@ func TestAgent(t *testing.T) {
 		startDir := t.TempDir()
 		nonexistent := filepath.Join(t.TempDir(), "does-not-exist")
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\ncd " + nonexistent + "\n```"}},
-			{Message: Message{Role: "assistant", Content: "```bash\nls\n```"}},
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: fmt.Sprintf(`{"type":"act","command":"cd %s"}`, nonexistent)}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"ls"}`}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"done"}`}},
 		}}
 		executor := &fakeExecutor{results: []CommandResult{{ExitCode: 0}, {Stdout: "files", ExitCode: 0}}}
 
@@ -741,10 +552,10 @@ func TestAgent(t *testing.T) {
 		}
 	})
 
-	t.Run("format error then recovery", func(t *testing.T) {
+	t.Run("protocol failure then recovery", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\n```"}},
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: "I'll help you with that."}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"completed"}`}},
 		}}
 
 		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
@@ -752,30 +563,34 @@ func TestAgent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		// Verify correction message was sent
 		lastMsgs := model.got[len(model.got)-1]
 		lastMsg := lastMsgs[len(lastMsgs)-1]
-		if !strings.Contains(lastMsg.Content, "bash") {
-			t.Error("format error should mention bash code blocks")
+		if !strings.Contains(lastMsg.Content, "Protocol error") {
+			t.Error("protocol correction should mention Protocol error")
 		}
 	})
 
-	t.Run("exits on consecutive format errors", func(t *testing.T) {
+	t.Run("exits on consecutive protocol failures", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\n```"}},
-			{Message: Message{Role: "assistant", Content: "```bash\n```"}},
+			{Message: Message{Role: "assistant", Content: "I'll help you."}},
+			{Message: Message{Role: "assistant", Content: "Let me think about this."}},
 		}}
 
 		agent := NewAgent(model, &fakeExecutor{}, "/tmp")
 		err := agent.Run(context.Background(), "do something")
 		if err == nil {
-			t.Error("expected error on consecutive format failures")
+			t.Error("expected error on consecutive protocol failures")
+		}
+		if !strings.Contains(err.Error(), "consecutive protocol failures") {
+			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("emits events for output", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\necho hi\n```"}, Usage: Usage{InputTokens: 10, OutputTokens: 5}},
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"echo hi"}`}, Usage: Usage{InputTokens: 10, OutputTokens: 5}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"done"}`}},
 		}}
 		executor := &fakeExecutor{results: []CommandResult{{Stdout: "hi\n", ExitCode: 0}}}
 		notify, events := collectEvents()
@@ -810,6 +625,7 @@ func TestAgent(t *testing.T) {
 				if ev.ExitCode != 0 {
 					t.Errorf("expected exit code 0, got %d", ev.ExitCode)
 				}
+			default:
 			}
 		}
 		if !gotResponse {
@@ -826,8 +642,8 @@ func TestAgent(t *testing.T) {
 	t.Run("compound cd does not update cwd", func(t *testing.T) {
 		startDir := t.TempDir()
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\ncd /tmp && ls\n```"}},
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"cd /tmp && ls"}`}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"done"}`}},
 		}}
 		executor := &fakeExecutor{results: []CommandResult{{Stdout: "stuff", ExitCode: 0}}}
 
@@ -847,9 +663,9 @@ func TestAgent(t *testing.T) {
 			t.Skip("cannot get home dir")
 		}
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\ncd ~\n```"}},
-			{Message: Message{Role: "assistant", Content: "```bash\nls\n```"}},
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"cd ~"}`}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"ls"}`}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"done"}`}},
 		}}
 		executor := &fakeExecutor{results: []CommandResult{{ExitCode: 0}, {Stdout: "files", ExitCode: 0}}}
 
@@ -865,8 +681,8 @@ func TestAgent(t *testing.T) {
 
 	t.Run("execution error is preserved in command payload", func(t *testing.T) {
 		model := &fakeModel{responses: []Response{
-			{Message: Message{Role: "assistant", Content: "```bash\nfalse\n```"}},
-			{Message: Message{Role: "assistant", Content: "All done.\n\n<done/>"}},
+			{Message: Message{Role: "assistant", Content: `{"type":"act","command":"false"}`}},
+			{Message: Message{Role: "assistant", Content: `{"type":"done","summary":"done"}`}},
 		}}
 		failExecutor := &fakeExecutor{
 			results: []CommandResult{{Stderr: "nope\n", ExitCode: 1}},
