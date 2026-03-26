@@ -65,32 +65,16 @@ func (a *Agent) AddMessages(msgs []Message) error {
 	return nil
 }
 
+// sectionEscaper replaces characters that could break tagged-text section boundaries.
+var sectionEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "[", "&#91;", "]", "&#93;")
+
 func formatCommandOutput(result CommandResult) string {
 	var b strings.Builder
-	b.WriteString("[command]\n")
-	b.WriteString(escapeSectionContent(result.Command))
-	b.WriteString("\n[/command]\n")
-	b.WriteString("[exit_code]\n")
-	fmt.Fprintf(&b, "%d", result.ExitCode)
-	b.WriteString("\n[/exit_code]\n")
-	b.WriteString("[stdout]\n")
-	b.WriteString(escapeSectionContent(result.Stdout))
-	b.WriteString("\n[/stdout]\n")
-	b.WriteString("[stderr]\n")
-	b.WriteString(escapeSectionContent(result.Stderr))
-	b.WriteString("\n[/stderr]")
+	fmt.Fprintf(&b, "[command]\n%s\n[/command]\n", sectionEscaper.Replace(result.Command))
+	fmt.Fprintf(&b, "[exit_code]\n%d\n[/exit_code]\n", result.ExitCode)
+	fmt.Fprintf(&b, "[stdout]\n%s\n[/stdout]\n", sectionEscaper.Replace(result.Stdout))
+	fmt.Fprintf(&b, "[stderr]\n%s\n[/stderr]", sectionEscaper.Replace(result.Stderr))
 	return b.String()
-}
-
-func escapeSectionContent(content string) string {
-	replacer := strings.NewReplacer(
-		"&", "&amp;",
-		"<", "&lt;",
-		">", "&gt;",
-		"[", "&#91;",
-		"]", "&#93;",
-	)
-	return replacer.Replace(content)
 }
 
 // Step runs one query-parse-execute cycle. It does not enforce step limits
