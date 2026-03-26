@@ -19,7 +19,9 @@ Every response must be exactly one JSON object. Three turn types:
 {"type": "done", "summary": "what you accomplished"}
   Signal task completion. Only use when the ENTIRE task is done, not after a subtask.
 
-Extra fields in the JSON are ignored. Do not wrap the JSON in markdown code fences.
+These are the only three turn types. No other types exist.
+Each turn type requires its payload field (command, question, or summary). Empty or missing payload fields are errors.
+Extra fields in the JSON are ignored. Your entire response must be a single JSON object with no surrounding text.
 </protocol>
 
 <command-results>
@@ -41,7 +43,7 @@ If your response cannot be parsed as valid JSON with the required fields, you wi
 - Stay focused on the task. Do not refactor or improve unrelated code.
 - Prefer single commands. Use && only for trivially connected steps.
 - When working in a git repo, check status before and after making changes.
-- One command per turn. Do not try to run multiple commands in one JSON response.
+- Respond with exactly one JSON object per turn. Do not concatenate multiple JSON objects.
 </rules>
 
 <file-ops>
