@@ -9,22 +9,18 @@ import (
 )
 
 // Turn is a sealed interface for structured model turns.
-// Only types in this package can implement it (unexported marker method).
 type Turn interface{ turn() }
 
-// ActTurn carries a bash command to execute.
 type ActTurn struct {
 	Command   string `json:"command"`
 	Reasoning string `json:"reasoning,omitempty"`
 }
 
-// ClarifyTurn asks the user a question.
 type ClarifyTurn struct {
 	Question  string `json:"question"`
 	Reasoning string `json:"reasoning,omitempty"`
 }
 
-// DoneTurn signals task completion with a summary.
 type DoneTurn struct {
 	Summary   string `json:"summary"`
 	Reasoning string `json:"reasoning,omitempty"`
@@ -34,7 +30,6 @@ func (ActTurn) turn()     {}
 func (ClarifyTurn) turn() {}
 func (DoneTurn) turn()    {}
 
-// jsonEnvelope is the raw JSON structure before type dispatch.
 type jsonEnvelope struct {
 	Type      string `json:"type"`
 	Command   string `json:"command,omitempty"`
@@ -43,7 +38,6 @@ type jsonEnvelope struct {
 	Reasoning string `json:"reasoning,omitempty"`
 }
 
-// Sentinel errors for protocol parsing failures.
 var (
 	ErrInvalidJSON     = errors.New("invalid JSON")
 	ErrMissingCommand  = errors.New("act turn requires command")
@@ -52,31 +46,24 @@ var (
 	ErrUnknownTurnType = errors.New("unknown turn type")
 )
 
-// jsonBlock matches a ```json or ``` fenced block.
 var jsonBlock = regexp.MustCompile("(?s)```(?:json)?\\s*\\n(.*?)\\n?```")
 
-// extractJSON finds the JSON object in model output.
-// Models may wrap JSON in prose, code fences, or return it bare.
+// extractJSON finds the JSON object in model output. Tries code fences first,
+// then falls back to brace-matching for bare JSON in prose.
 func extractJSON(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("%w: empty response", ErrInvalidJSON)
 	}
-
-	// Try fenced code block first.
 	if m := jsonBlock.FindStringSubmatch(raw); len(m) >= 2 {
 		return strings.TrimSpace(m[1]), nil
 	}
 
-	// Try to find a bare JSON object in the text.
 	start := strings.IndexByte(raw, '{')
 	if start < 0 {
 		return "", fmt.Errorf("%w: no JSON object found in response", ErrInvalidJSON)
 	}
-	// Find the matching closing brace (simple depth counter).
-	depth := 0
-	inString := false
-	escaped := false
+	depth, inString, escaped := 0, false, false
 	for i := start; i < len(raw); i++ {
 		c := raw[i]
 		if escaped {
@@ -113,7 +100,6 @@ func ParseTurn(raw string) (Turn, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	var env jsonEnvelope
 	if err := json.Unmarshal([]byte(jsonStr), &env); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
@@ -142,7 +128,6 @@ func ParseTurn(raw string) (Turn, error) {
 	}
 }
 
-// errorToReason returns a machine-readable reason string for a parse error.
 func errorToReason(err error) string {
 	switch {
 	case errors.Is(err, ErrInvalidJSON):
