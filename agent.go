@@ -204,6 +204,11 @@ func (a *Agent) Run(ctx context.Context, task string) error {
 				}
 				a.messages = append(a.messages, resp.Message)
 				a.notify(EventResponse{Message: resp.Message, Usage: resp.Usage})
+				if turn, parseErr := ParseTurn(resp.Message.Content); parseErr != nil {
+					a.notify(EventDebug{Message: fmt.Sprintf("final response not a valid turn: %v", parseErr)})
+				} else {
+					a.notify(EventDebug{Message: fmt.Sprintf("final response turn: %T", turn)})
+				}
 				return nil
 			}
 		}

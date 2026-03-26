@@ -383,6 +383,8 @@ func writeEventLog(f *os.File, e hew.Event) {
 		}{Reason: e.Reason, Raw: e.Raw}}
 	case hew.EventDebug:
 		je = jsonEvent{Type: "debug", Payload: e}
+	default:
+		return
 	}
 	data, err := json.Marshal(je)
 	if err != nil {
