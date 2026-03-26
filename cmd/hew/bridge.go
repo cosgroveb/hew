@@ -64,8 +64,8 @@ func writeEventLog(f *os.File, e hew.Event) {
 			ExitCode int    `json:"exit_code"`
 			Err      string `json:"err,omitempty"`
 		}{Command: ev.Command, Stdout: ev.Stdout, Stderr: ev.Stderr, ExitCode: ev.ExitCode, Err: errString(ev.Err)}}
-	case hew.EventFormatError:
-		je = jsonEvent{Type: "format_error", Payload: ev}
+	case hew.EventProtocolFailure:
+		je = jsonEvent{Type: "protocol_failure", Payload: ev}
 	case hew.EventDebug:
 		je = jsonEvent{Type: "debug", Payload: ev}
 	default:

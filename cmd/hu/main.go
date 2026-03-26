@@ -224,7 +224,7 @@ Environment:
 				fmt.Fprint(os.Stderr, e.Stderr) //nolint:errcheck
 			}
 			fmt.Fprintln(os.Stdout, "--- done ---") //nolint:errcheck
-		case hew.EventFormatError:
+		case hew.EventProtocolFailure:
 			// handled by agent loop; nothing to print
 		case hew.EventDebug:
 			if showDebug {
@@ -374,8 +374,8 @@ func writeEventLog(f *os.File, e hew.Event) {
 			ExitCode int    `json:"exit_code"`
 			Err      string `json:"err,omitempty"`
 		}{Command: e.Command, Stdout: e.Stdout, Stderr: e.Stderr, ExitCode: e.ExitCode, Err: errString(e.Err)}}
-	case hew.EventFormatError:
-		je = jsonEvent{Type: "format_error", Payload: e}
+	case hew.EventProtocolFailure:
+		je = jsonEvent{Type: "protocol_failure", Payload: e}
 	case hew.EventDebug:
 		je = jsonEvent{Type: "debug", Payload: e}
 	}

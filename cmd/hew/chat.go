@@ -108,9 +108,9 @@ func (c *chatModel) appendEvent(e hew.Event) {
 		c.content.WriteString("\n")
 		c.pendingCmd = ""
 		c.lastCmd = ""
-	case hew.EventFormatError:
+	case hew.EventProtocolFailure:
 		c.content.WriteString(c.styles.Chat.Warning.Render(
-			fmt.Sprintf("%s No bash block found in response — format error", iconWarning),
+			fmt.Sprintf("%s protocol: %s", iconWarning, ev.Message),
 		))
 		c.content.WriteString("\n\n")
 	case hew.EventDebug:

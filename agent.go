@@ -65,16 +65,6 @@ func (a *Agent) AddMessages(msgs []Message) error {
 	return nil
 }
 
-// summarizeCommand returns a short display form of a command for debug output.
-func summarizeCommand(cmd string) string {
-	lines := strings.Split(cmd, "\n")
-	first := lines[0]
-	if len(lines) == 1 {
-		return first
-	}
-	return fmt.Sprintf("%s ... (%d lines)", first, len(lines))
-}
-
 func formatCommandOutput(result CommandResult) string {
 	var b strings.Builder
 	b.WriteString("[command]\n")
