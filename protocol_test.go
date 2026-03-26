@@ -146,16 +146,36 @@ func TestParseTurn(t *testing.T) {
 }
 
 func TestParseTurnTypes(t *testing.T) {
-	t.Run("ActTurn implements Turn", func(t *testing.T) {
-		var turn Turn = &ActTurn{Command: "ls"}
+	t.Run("ActTurn implements Turn via value", func(t *testing.T) {
+		var turn Turn = ActTurn{Command: "ls"}
 		turn.turn() // compile-time check
 	})
+	t.Run("ActTurn implements Turn via pointer", func(t *testing.T) {
+		var turn Turn = &ActTurn{Command: "ls"}
+		turn.turn()
+	})
 	t.Run("ClarifyTurn implements Turn", func(t *testing.T) {
-		var turn Turn = &ClarifyTurn{Question: "which dir?"}
+		var turn Turn = ClarifyTurn{Question: "which dir?"}
 		turn.turn()
 	})
 	t.Run("DoneTurn implements Turn", func(t *testing.T) {
-		var turn Turn = &DoneTurn{Summary: "done"}
+		var turn Turn = DoneTurn{Summary: "done"}
 		turn.turn()
 	})
+}
+
+func TestExtractJSON_NestedBraces(t *testing.T) {
+	// Verify that braces inside JSON string values are handled correctly.
+	input := `{"type":"act","command":"echo '{}'"}`
+	turn, err := ParseTurn(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	act, ok := turn.(*ActTurn)
+	if !ok {
+		t.Fatalf("expected *ActTurn, got %T", turn)
+	}
+	if act.Command != "echo '{}'" {
+		t.Errorf("got command %q, want %q", act.Command, "echo '{}'")
+	}
 }

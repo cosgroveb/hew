@@ -26,9 +26,9 @@ type DoneTurn struct {
 	Summary string `json:"summary"`
 }
 
-func (*ActTurn) turn()     {}
-func (*ClarifyTurn) turn() {}
-func (*DoneTurn) turn()    {}
+func (ActTurn) turn()     {}
+func (ClarifyTurn) turn() {}
+func (DoneTurn) turn()    {}
 
 // jsonEnvelope is the raw JSON structure before type dispatch.
 type jsonEnvelope struct {
@@ -39,7 +39,7 @@ type jsonEnvelope struct {
 }
 
 // jsonBlock matches a ```json or ``` fenced block.
-var jsonBlock = regexp.MustCompile("(?s)```(?:json)?\\s*\\n(.*?)\\n```")
+var jsonBlock = regexp.MustCompile("(?s)```(?:json)?\\s*\\n(.*?)\\n?```")
 
 // extractJSON finds the JSON object in model output.
 // Models may wrap JSON in prose, code fences, or return it bare.
