@@ -54,33 +54,22 @@ Bad: "Something went wrong, let me try a different approach."
 
 // PromptOptions configures system prompt generation.
 type PromptOptions struct {
-	// OmitSystemPrompt skips the entire system prompt. When true,
-	// LoadPromptWithOptions returns an empty string.
-	OmitSystemPrompt bool
-
-	// SystemPromptAppend is appended verbatim to the end of the
-	// system prompt (after all AGENTS.md layers).
-	SystemPromptAppend string
+	OmitSystemPrompt   bool   // skip the entire system prompt
+	SystemPromptAppend string // appended after all AGENTS.md layers
 }
 
-// LoadPromptWithOptions returns the system prompt with configurable options.
-// It appends AGENTS.md content if present in dir. When opts.OmitSystemPrompt
-// is true, it returns an empty string.
+// LoadPromptWithOptions builds the system prompt with optional AGENTS.md layers.
 func LoadPromptWithOptions(dir string, opts PromptOptions) string {
 	if opts.OmitSystemPrompt {
 		return opts.SystemPromptAppend
 	}
 
 	prompt := basePrompt
-
-	// Layer 1: Global user instructions ($HOME/AGENTS.md)
 	if home, err := os.UserHomeDir(); err == nil {
 		if data, err := os.ReadFile(filepath.Join(home, "AGENTS.md")); err == nil && len(data) > 0 {
 			prompt += "\n\n<user-instructions>\n" + string(data) + "\n</user-instructions>"
 		}
 	}
-
-	// Layer 2: hew-specific user config ($XDG_CONFIG_HOME/hew/AGENTS.md)
 	configDir := os.Getenv("XDG_CONFIG_HOME")
 	if configDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -92,12 +81,9 @@ func LoadPromptWithOptions(dir string, opts PromptOptions) string {
 			prompt += "\n\n<config-instructions>\n" + string(data) + "\n</config-instructions>"
 		}
 	}
-
-	// Layer 3: Project-local instructions (working directory AGENTS.md)
 	if data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md")); err == nil && len(data) > 0 {
 		prompt += "\n\n<project-instructions>\n" + string(data) + "\n</project-instructions>"
 	}
-
 	if opts.SystemPromptAppend != "" {
 		prompt += "\n\n" + opts.SystemPromptAppend
 	}
