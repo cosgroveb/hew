@@ -11,11 +11,11 @@ func TestLoadPromptWithOptions_BasePrompt(t *testing.T) {
 	t.Run("base prompt only", func(t *testing.T) {
 		dir := t.TempDir()
 		prompt := LoadPromptWithOptions(dir, PromptOptions{})
-		if !strings.Contains(prompt, "```bash") {
-			t.Error("base prompt should contain bash code block instructions")
+		if !strings.Contains(prompt, `"type"`) {
+			t.Error("base prompt should contain JSON turn type instructions")
 		}
-		if !strings.Contains(prompt, "<done/>") {
-			t.Error("base prompt should contain done signal instructions")
+		if !strings.Contains(prompt, "protocol") {
+			t.Error("base prompt should contain protocol section")
 		}
 	})
 
@@ -50,7 +50,7 @@ func TestLoadPromptWithOptions(t *testing.T) {
 		}
 
 		prompt := LoadPromptWithOptions(dir, PromptOptions{})
-		if !strings.Contains(prompt, "```bash") {
+		if !strings.Contains(prompt, "protocol") {
 			t.Error("default prompt should contain base prompt")
 		}
 		if !strings.Contains(prompt, content) {
